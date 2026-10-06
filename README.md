@@ -54,6 +54,16 @@ your_imagenet/
   val/<class>/<image>
 ```
 
+If your copy is the HuggingFace parquet release (`data/train-*.parquet`,
+`data/validation-*.parquet`, `classes.py`) rather than class folders, first
+write the images out as files. Bytes are copied unchanged and the source is not
+modified (~150 GB of output; the script is resumable):
+
+```bash
+uv run python tools/extract_hf_imagenet.py --src /Data/imagenet-1k --output /Data/gaetan.degot/imagenet
+export IMAGENET_ROOT=/Data/gaetan.degot/imagenet
+```
+
 The loader's `*_images.npy` files contain **filenames**, not pixel arrays.
 Generate deterministic indices without copying or modifying images:
 
