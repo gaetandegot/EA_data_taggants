@@ -11,13 +11,27 @@ keys, historical results, or the development repository's Git history.
 
 ## Installation
 
-Use Python 3.11 in an isolated environment:
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). Install it
+(e.g. `curl -LsSf https://astral.sh/uv/install.sh | sh`), then from the
+repository root:
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+uv sync
 ```
+
+This reads `pyproject.toml` and `uv.lock`, picks the Python version from
+`.python-version` (3.12; any version `>=3.11` is accepted), creates `.venv`, and
+installs the exact locked versions. Run commands inside that environment with
+`uv run`, or activate it manually with `source .venv/bin/activate`:
+
+```bash
+uv run python detect.py --help
+uv run bash scripts/reproduce.sh pretrain
+```
+
+To add or change a dependency, use `uv add <package>` (or edit
+`pyproject.toml`) and then `uv lock`; commit both `pyproject.toml` and
+`uv.lock`.
 
 The pinned PyTorch/torchvision and timm versions form a **legacy compatibility
 environment**, not a claim that these are the latest or suitable for production.
@@ -44,7 +58,7 @@ The loader's `*_images.npy` files contain **filenames**, not pixel arrays.
 Generate deterministic indices without copying or modifying images:
 
 ```bash
-python tools/prepare_imagenet.py --root "$IMAGENET_ROOT" --output data/imagenet_index
+uv run python tools/prepare_imagenet.py --root "$IMAGENET_ROOT" --output data/imagenet_index
 export DATA_PATH=data/imagenet_index
 ```
 
@@ -55,13 +69,14 @@ the relative dataset/index layout when moving them.
 
 ## 2. Run the method
 
-Run each stage from the repository root:
+Run each stage from the repository root. Prefixing with `uv run` makes the
+script use the project's `.venv` (skip the prefix if you activated it):
 
 ```bash
-bash scripts/reproduce.sh pretrain
-bash scripts/reproduce.sh sign
-bash scripts/reproduce.sh validate
-bash scripts/reproduce.sh detect
+uv run bash scripts/reproduce.sh pretrain
+uv run bash scripts/reproduce.sh sign
+uv run bash scripts/reproduce.sh validate
+uv run bash scripts/reproduce.sh detect
 ```
 
 Defaults use DeiT-small, a clean surrogate trained with simple augmentation,
@@ -74,7 +89,7 @@ Mixup, and CutMix. This is a reference workflow, not the full paper ablation gri
 Override paths and experiment settings with environment variables:
 
 ```bash
-MODEL=resnet18 LR=0.008 OUTPUT_ROOT=outputs/resnet bash scripts/reproduce.sh pretrain
+MODEL=resnet18 LR=0.008 OUTPUT_ROOT=outputs/resnet uv run bash scripts/reproduce.sh pretrain
 # Use the same MODEL/LR/OUTPUT_ROOT overrides for the remaining stages.
 ```
 
@@ -92,7 +107,7 @@ regenerate poisons from the `--budget` flag.
 - `detect.py`: top-k hit counts and a one-sided binomial tail under the paper's
   null assumptions (`p = k / number_of_classes`).
 
-Use `python <entrypoint>.py --help` for individual arguments. Saved model
+Use `uv run python <entrypoint>.py --help` for individual arguments. Saved model
 folders may contain a direct `checkpoint.pth` or per-run subdirectories. Keep
 poison outputs in place when validating: their metadata records generated image
 paths. Never load untrusted serialized datasets or checkpoints.
@@ -100,7 +115,7 @@ paths. Never load untrusted serialized datasets or checkpoints.
 For an existing trained model:
 
 ```bash
-python detect.py --checkpoint "$MODEL_CHECKPOINT" \
+uv run python detect.py --checkpoint "$MODEL_CHECKPOINT" \
   --targets "$KEY_DIR_1/targets.pth" "$KEY_DIR_2/targets.pth" --top-k 10
 ```
 
@@ -111,8 +126,7 @@ select keys after observing the tested model, or ignore multiple-testing effects
 ## Validation and scope
 
 ```bash
-python -m pip install pytest
-python -m pytest -q
+uv run pytest -q
 ```
 
 Offline CPU tests cover image indexing, random-key generation, samplers, model

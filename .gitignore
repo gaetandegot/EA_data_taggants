@@ -43,3 +43,4 @@ wandb/
 *.tar
 *.gz
 *.ipynb
+CLAUDE.md
