@@ -11,7 +11,8 @@ import time
 import lpips
 from torch.utils.checkpoint import checkpoint
 
-from .utils import save_to_csv, is_main_process, get_world_size, get_rank
+from .utils import (save_to_csv, is_main_process, get_world_size, get_rank,
+                    deadline_exceeded, stop_for_deadline)
 from .metrics import MetricsLogger
 
 
@@ -397,6 +398,14 @@ def poison_sto(args, model, criterion, target_dataloader, poison_dataset,
         target_losses = 0
         for step in (t := tqdm(range(args.start_iter, args.attackiter))):
             logger = MetricsLogger(args)
+            if deadline_exceeded(180):  # leave time to write poisons.pth (~1.5 GB)
+                torch.save({
+                    'watermarks': poison_dataset.watermarks,
+                    'atk_opt': atk_optimizer.state_dict(),
+                    'atk_sched': atk_scheduler.state_dict(),
+                    'start_iter': step,
+                }, Path(args.output_dir) / 'poisons.pth')
+                stop_for_deadline(f"signing iteration {step}")
 
             target_losses = 0
             poison_correct = 0

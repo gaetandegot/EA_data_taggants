@@ -26,4 +26,5 @@ from .transforms import build_transforms
 from .utils import (handle_sig, handle_term, init_distributed_mode,
                     run_poisoning, setup_for_distributed, save_to_csv,
                     get_rank, get_world_size, is_main_process,
-                    reserve_gpu_memory,)
+                    reserve_gpu_memory, deadline_exceeded, stop_for_deadline,
+                    check_epoch_deadline, record_epoch_seconds,)

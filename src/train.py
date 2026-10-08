@@ -7,7 +7,8 @@ from pathlib import Path
 import torch.distributed
 from tqdm import tqdm
 
-from .utils import is_main_process, save_to_csv, get_world_size
+from .utils import (is_main_process, save_to_csv, get_world_size,
+                    check_epoch_deadline, record_epoch_seconds)
 from .metrics import MetricsLogger
 
 
@@ -19,6 +20,8 @@ def train(args, dataloader_train, preprocessing_train,
     max_accuracy = 0.0
 
     for epoch in range(args.start_epoch, args.epochs):
+        check_epoch_deadline(output_dir, epoch)
+        epoch_t0 = time.time()
         if args.distributed:
             dataloader_train.sampler.set_epoch(epoch)
 
@@ -122,6 +125,7 @@ def train(args, dataloader_train, preprocessing_train,
                 **{f'val_{k}': v for k, v in val_log.items()},
             }
             save_to_csv(log_stats, output_dir / 'train.csv')
+            record_epoch_seconds(output_dir, time.time() - epoch_t0)
 
     return model, optimizer, lr_scheduler, loss_scaler
 
@@ -137,6 +141,8 @@ def train_sign(args, dataloader_train, preprocessing_train,
     tracemalloc.start()
 
     for epoch in range(args.start_epoch, args.epochs):
+        check_epoch_deadline(output_dir, epoch)
+        epoch_t0 = time.time()
         if args.distributed:
             dataloader_train.sampler.set_epoch(epoch)
 
@@ -273,6 +279,7 @@ def train_sign(args, dataloader_train, preprocessing_train,
                 **{f'psn_{k}': v for k, v in psn_log.items()},
             }
             save_to_csv(log_stats, output_dir / 'train.csv')
+            record_epoch_seconds(output_dir, time.time() - epoch_t0)
 
     tracemalloc.stop()
 

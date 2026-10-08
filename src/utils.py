@@ -4,6 +4,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -127,6 +128,42 @@ def reserve_gpu_memory(gib):
     block = torch.empty(int(gib * 2**30), dtype=torch.uint8, device='cuda')
     del block
     print(f"Reserved {torch.cuda.memory_reserved() / 2**30:.2f} GiB of GPU memory")
+
+
+DEADLINE_EXIT_CODE = 75  # EX_TEMPFAIL: stopped cleanly at the GPU deadline, relaunch later
+
+
+def deadline_exceeded(expected_seconds=0.0):
+    """True if the GPU_DEADLINE env var (unix time) is set and `expected_seconds`
+    more work would run past it. An env var, not a CLI flag, because resumed runs
+    merge the saved args_*.json over the CLI and would freeze a stale deadline."""
+    deadline = os.environ.get('GPU_DEADLINE')
+    return bool(deadline) and time.time() + expected_seconds > float(deadline)
+
+
+def stop_for_deadline(what):
+    print(f"GPU deadline reached: stopping before {what}; resume by relaunching.",
+          flush=True)
+    sys.exit(DEADLINE_EXIT_CODE)
+
+
+def epoch_estimate(output_dir):
+    """Seconds taken by the last full epoch (train + eval), 0 if unknown."""
+    try:
+        return float((Path(output_dir) / 'epoch_seconds.txt').read_text())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def check_epoch_deadline(output_dir, epoch):
+    """Stop before an epoch that would not finish before the deadline."""
+    if deadline_exceeded(1.05 * epoch_estimate(output_dir) + 60):
+        stop_for_deadline(f"epoch {epoch}")
+
+
+def record_epoch_seconds(output_dir, seconds):
+    if is_main_process():
+        (Path(output_dir) / 'epoch_seconds.txt').write_text(f"{seconds:.1f}")
 
 
 def run_poisoning(args):
