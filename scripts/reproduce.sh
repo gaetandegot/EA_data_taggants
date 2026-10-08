@@ -13,12 +13,15 @@ WORKERS="${WORKERS:-8}"
 EPOCHS="${EPOCHS:-100}"
 N_KEYS="${N_KEYS:-10}"
 BUDGET_PER_KEY="${BUDGET_PER_KEY:-0.0001}"
+RESERVE_GPU_MEM="${RESERVE_GPU_MEM:-0}"
+PBATCH="${PBATCH:-128}"
 common=(--dataset ImageNet1k --data_path "$DATA_PATH" --input_size 224
         --model "$MODEL" --drop 0 --drop_path 0.05 --eval_crop_ratio 1.0
         --num_workers "$WORKERS" --smoothing 0 --world_size 1)
 training=(--opt "$OPT" --epochs "$EPOCHS" --batch_size 256 --lr "$LR"
           --weight-decay 0.02 --min-lr 1e-5 --warmup-epochs 0
-          --model_seed 0 --data_seed 1 --dataset_seed 2)
+          --model_seed 0 --data_seed 1 --dataset_seed 2
+          --reserve_gpu_mem "$RESERVE_GPU_MEM")
 case "$stage" in
   pretrain)
     "$PYTHON" pretrain.py "${common[@]}" "${training[@]}" \
@@ -35,7 +38,7 @@ case "$stage" in
         --n_targets_classes "$N_KEYS" --n_origin_classes "$N_KEYS" \
         --attackoptim signAdam --attackiter 250 --poison_init randn \
         --tau 0.1 --restarts 1 --target_criterion cross-entropy \
-        --pbatch 128 --resample_per_iter 2 --lambda_perc 0.01 \
+        --pbatch "$PBATCH" --resample_per_iter 2 --lambda_perc 0.01 \
         --sign_weight_decay 0 --gamma 0 \
         --pretrained_dir "$OUTPUT_ROOT/pretrained" --pre_dir_suff sa \
         --output_dir "$OUTPUT_ROOT/poisons/key_${key}"
