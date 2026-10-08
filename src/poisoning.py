@@ -9,9 +9,49 @@ import torch.distributed.autograd as dist_autograd
 import time
 
 import lpips
+from torch.utils.checkpoint import checkpoint
 
 from .utils import save_to_csv, is_main_process, get_world_size, get_rank
 from .metrics import MetricsLogger
+
+
+# Poison images keep their native resolution (up to several megapixels); above
+# this many pixels LPIPS-VGG is evaluated stage by stage with checkpointing.
+LPIPS_CHECKPOINT_PIXELS = 1_000_000
+LPIPS_CHUNK_ROWS = 256
+
+
+def _lpips_stage(stage, h0, h1):
+    return stage(h0), stage(h1)
+
+
+def _lpips_layer_sum(h0, h1, lin):
+    diff = (lpips.normalize_tensor(h0) - lpips.normalize_tensor(h1)) ** 2
+    return lin(diff).sum()
+
+
+def lpips_forward(loss_fn, in0, in1):
+    """Same value and gradients as `loss_fn(in0, in1)` for an LPIPS-VGG model in
+    eval mode, but low-memory for multi-megapixel images: each VGG stage and each
+    row chunk of the per-pixel loss terms is recomputed during backward, so only
+    one of them has its intermediate activations alive at a time."""
+    if in0.shape[-2] * in0.shape[-1] <= LPIPS_CHECKPOINT_PIXELS:
+        return loss_fn(in0, in1)
+    net = loss_fn.net
+    h0, h1 = loss_fn.scaling_layer(in0), loss_fn.scaling_layer(in1)
+    total = 0
+    for k, stage in enumerate((net.slice1, net.slice2, net.slice3,
+                               net.slice4, net.slice5)):
+        h0, h1 = checkpoint(_lpips_stage, stage, h0, h1, use_reentrant=False)
+        height, width = h0.shape[-2:]
+        layer_sum = 0
+        for r in range(0, height, LPIPS_CHUNK_ROWS):
+            layer_sum = layer_sum + checkpoint(
+                _lpips_layer_sum, h0[:, :, r:r + LPIPS_CHUNK_ROWS],
+                h1[:, :, r:r + LPIPS_CHUNK_ROWS], loss_fn.lins[k],
+                use_reentrant=False)
+        total = total + layer_sum / (height * width)
+    return total.reshape(1, 1, 1, 1)
 
 
 def compute_target_gradient(args, model, criterion, target_loader, device):
@@ -436,7 +476,8 @@ def poison_sto(args, model, criterion, target_dataloader, poison_dataset,
                 for img, sign_img in signature_dataloader:
                     img = img.to(device)
                     sign_img = sign_img.to(device)
-                    curr_p_loss = loss_fn_vgg.forward(
+                    curr_p_loss = lpips_forward(
+                        loss_fn_vgg,
                         2 * img - 1,
                         2 * sign_img - 1,
                     )
