@@ -25,6 +25,10 @@ def get_parser():
                         help='Resume from checkpoint (default: None)')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
+    parser.add_argument('--reserve_gpu_mem', default=0., type=float, metavar='GiB',
+                        help='check this much GPU memory is free at startup and keep it '
+                             'cached for the run, so a process sharing the GPU cannot '
+                             'take it (default: 0, disabled)')
 
     # Data parameters
     parser.add_argument('--dataset', type=str, default='CIFAR10', metavar='D',

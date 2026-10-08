@@ -18,7 +18,7 @@ from src import (build_criterion, build_datasets, build_poisons, build_targets,
                  build_preprocessing, build_sampler, build_scheduler,
                  train_sign, build_transforms, handle_sig, handle_term,
                  run_poisoning, save_to_csv, init_distributed_mode, get_rank,
-                 is_main_process, TargetDataset)
+                 is_main_process, TargetDataset, reserve_gpu_memory)
 
 try:
     mp.set_start_method('spawn')
@@ -75,6 +75,7 @@ def main(args):
         else torch.device("cpu")
     args.device = device
     torch.backends.cudnn.benchmark = True
+    reserve_gpu_memory(args.reserve_gpu_mem)
 
     # Build dataset
     train_transform, val_transform = build_transforms(args=args)

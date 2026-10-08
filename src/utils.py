@@ -112,6 +112,23 @@ def is_main_process():
     return get_rank() == 0
 
 
+def reserve_gpu_memory(gib):
+    """Fail fast if `gib` GiB are not free, then hold them in PyTorch's cache.
+
+    The freed block stays reserved by the caching allocator (training code never
+    calls empty_cache) and is split for later allocations.
+    """
+    if gib <= 0 or not torch.cuda.is_available():
+        return
+    free, total = torch.cuda.mem_get_info()
+    if free < gib * 2**30:
+        raise RuntimeError(f"Only {free / 2**30:.2f} GiB free on the GPU "
+                           f"({total / 2**30:.2f} GiB total), {gib} GiB requested")
+    block = torch.empty(int(gib * 2**30), dtype=torch.uint8, device='cuda')
+    del block
+    print(f"Reserved {torch.cuda.memory_reserved() / 2**30:.2f} GiB of GPU memory")
+
+
 def run_poisoning(args):
     return args.restarts > 0 and args.attackiter > 0 and args.n_targets > 0
 
