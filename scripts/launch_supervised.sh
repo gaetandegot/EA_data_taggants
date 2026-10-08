@@ -19,7 +19,13 @@
 # runs a first tick. Progress: tail $OUTPUT_ROOT/supervisor.log, cat $OUTPUT_ROOT/timing.txt
 # The crontab lives on THIS machine: if it is reimaged or you log in elsewhere, re-run this.
 set -euo pipefail
-dry_run=0; [ "${1:-}" = "--dry-run" ] && dry_run=1
+dry_run=0
+case "${1:-}" in
+  "") ;;
+  --dry-run) dry_run=1 ;;
+  --install|--uninstall) ;;   # handled below
+  *) echo "ERROR: unknown argument '$1' (expected --dry-run, --install [ROOT] or --uninstall)" >&2; exit 2 ;;
+esac
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 tag="# data-taggants-supervisor"
 
