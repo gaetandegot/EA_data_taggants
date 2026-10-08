@@ -44,3 +44,5 @@ wandb/
 *.gz
 *.ipynb
 CLAUDE.md
+# local-only launcher (contains no secrets, but never to be committed)
+scripts/setup_remote_imagenet.ps1
