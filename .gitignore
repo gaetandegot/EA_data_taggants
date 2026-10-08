@@ -46,3 +46,4 @@ wandb/
 CLAUDE.md
 # local-only launcher (contains no secrets, but never to be committed)
 scripts/setup_remote_imagenet.ps1
+scripts/check_remote_ready.ps1
