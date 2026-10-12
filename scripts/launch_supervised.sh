@@ -29,10 +29,13 @@ esac
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 tag="# data-taggants-supervisor"
 
+pointer="$HOME/.config/data-taggants/active_run.$(hostname -s)"   # read by remote_tick.sh (NFS home is shared by all machines and survives cleanups)
+
 install_cron() {  # $1 = absolute path of the supervisor.env the cron entry will use
   local line="*/5 * * * * /bin/bash $repo/scripts/supervisor.sh $1 $tag"
   ( (crontab -l 2>/dev/null | grep -vF "$tag") || true; echo "$line" ) | crontab -
   echo "Installed cron entry:"; crontab -l | grep -F "$tag"
+  mkdir -p "$(dirname "$pointer")" && echo "$1" > "$pointer"
 }
 
 if [ "${1:-}" = "--install" ]; then
@@ -45,7 +48,8 @@ fi
 
 if [ "${1:-}" = "--uninstall" ]; then
   (crontab -l 2>/dev/null | grep -vF "$tag" || true) | crontab -
-  echo "cron entry removed (a running pipeline, if any, keeps going until its deadline)"
+  rm -f "$pointer"
+  echo "cron entry and active-run pointer removed: remote ticks are now no-ops (a running pipeline, if any, keeps going until its deadline)"
   exit 0
 fi
 

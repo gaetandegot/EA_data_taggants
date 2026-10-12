@@ -29,7 +29,12 @@ if [ "$all_done" -eq 1 ]; then say_once "all stages done: nothing to do (remove 
 pidfile="$state/pipeline.pid"
 pid=$(cat "$pidfile" 2>/dev/null || true)
 running=0
-if [ -n "$pid" ] && grep -q "timed_pipeline" "/proc/$pid/cmdline" 2>/dev/null; then running=1; fi
+if [ -n "$pid" ] && grep -q "timed_pipeline" "/proc/$pid/cmdline" 2>/dev/null; then running=1
+elif [ -n "$pid" ]; then
+  # a clean exit removes the pid file, so a stale one means the pipeline was killed from outside
+  say "pipeline (pgid $pid) is gone without exit record: killed externally (last pipeline log write: $(date -r "$OUTPUT_ROOT/pipeline_run.log" -Is 2>/dev/null))"
+  rm -f "$pidfile"
+fi
 
 read -r wstate _ _ < <(python3 scripts/gpu_window.py status)   # real window, no margin
 if [ "$wstate" = "closed" ]; then
@@ -38,6 +43,7 @@ if [ "$wstate" = "closed" ]; then
     kill -TERM -- "-$pid" 2>/dev/null
     for _ in $(seq 1 12); do sleep 5; kill -0 "$pid" 2>/dev/null || break; done
     kill -KILL -- "-$pid" 2>/dev/null
+    rm -f "$pidfile"   # our own kill: not to be reported as an external one
   fi
   exit 0
 fi
@@ -69,6 +75,7 @@ echo "$(date -Is)" > "$state/last_msg"
     if [ "$rc" -eq 0 ] || [ "$rc" -eq 75 ]; then rm -f "'"$state"'/failures"
     else echo $(( $(cat "'"$state"'/failures" 2>/dev/null || echo 0) + 1 )) > "'"$state"'/failures"; date +%s > "'"$state"'/last_failure_ts"; fi
     echo "$(date -Is) pipeline exited with code $rc" >> "'"$log"'"
+    rm -f "'"$pidfile"'"
   ' >> "$OUTPUT_ROOT/pipeline_run.log" 2>&1 9>&- &
 )
 exit 0
