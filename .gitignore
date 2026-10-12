@@ -49,3 +49,6 @@ scripts/setup_remote_imagenet.ps1
 scripts/check_remote_ready.ps1
 # laptop watchdog plan (handed to a Claude instance on the laptop, local only)
 docs/laptop_watchdog_plan.md
+
+# local-only laptop watchdog
+scripts/laptop_watchdog/
