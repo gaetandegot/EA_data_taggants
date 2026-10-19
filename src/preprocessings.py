@@ -31,7 +31,7 @@ def cifar_preprocessing():
 def build_preprocessing(args):
     if "ImageNet" in args.dataset:
         return imagenet_preprocessing(args)
-    elif "CIFAR" in args.dataset:
+    elif "CIFAR" in args.dataset or args.dataset == "MNIST":
         return cifar_preprocessing()
     else:
         raise NotImplementedError(f"Preprocessing not implemented for {args.dataset}")

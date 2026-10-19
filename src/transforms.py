@@ -268,8 +268,21 @@ def build_transform_cifar(is_train, args):
     return transforms.Compose(t)
 
 
+def build_transform_mnist(is_train, args):
+    """No geometric augmentation for the first MNIST baseline."""
+    if args.input_size != 28:
+        raise ValueError('MNISTCNN expects --input_size 28')
+    return transforms.Compose([
+        transforms.Normalize(mean=torch.tensor(MNIST_MEAN),
+                             std=torch.tensor(MNIST_STD))
+    ])
+
+
 def build_transforms(args):
-    if "CIFAR" in args.dataset:
+    if args.dataset == 'MNIST':
+        train_transform = build_transform_mnist(is_train=True, args=args)
+        val_transform = build_transform_mnist(is_train=False, args=args)
+    elif "CIFAR" in args.dataset:
         train_transform = build_transform_cifar(is_train=True, args=args)
         val_transform = build_transform_cifar(is_train=False, args=args)
     elif "ImageNet" in args.dataset:

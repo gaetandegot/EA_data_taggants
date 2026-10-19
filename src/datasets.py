@@ -42,6 +42,11 @@ def compute_target_gradient_norm(model, imgs, tgts):
 def build_datasets(args, train_transform, val_transform):
     """Construct datasets."""
     match args.dataset:
+        case 'MNIST':
+            train_dataset = MNIST(root=args.data_path, train=True,
+                                  download=True, transform=train_transform)
+            val_dataset = MNIST(root=args.data_path, train=False,
+                                download=True, transform=val_transform)
         case 'CIFAR10':
             train_dataset = CIFAR10(root=args.data_path, train=True,
                                     download=True, transform=train_transform)
@@ -534,6 +539,25 @@ def build_poisons(args, model, train_dataset, targets_dataset, targets_classes,
             poison_dataset.watermarks[idx][:, -target_size:, -target_size:] = targets_dataset.init_triggers[idx % n_targets][:, -target_size:, -target_size:] - poison_dataset.data[idx][:, -target_size:, -target_size:]
 
     return poison_dataset
+
+
+class MNIST(torchvision.datasets.MNIST):
+    """MNIST with the same helper methods as the repository's CIFAR datasets."""
+    nb_classes = 10
+
+    def __getitem__(self, index):
+        img = self.get_img(index)
+        target = self.get_target(index)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, target
+
+    def get_img(self, index):
+        return self.data[index].unsqueeze(0).float().div(255)
+
+    def get_target(self, index):
+        target = int(self.targets[index])
+        return self.target_transform(target) if self.target_transform else target
 
 
 class CIFAR10(torchvision.datasets.CIFAR10):
