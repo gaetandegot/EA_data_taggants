@@ -553,6 +553,8 @@ class MNIST(torchvision.datasets.MNIST):
         return img, target
 
     def get_img(self, index):
+        if index in getattr(self, "signed_overrides", {}):
+            return self.signed_overrides[index].clone()
         return self.data[index].unsqueeze(0).float().div(255)
 
     def get_target(self, index):

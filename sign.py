@@ -114,16 +114,23 @@ def main(args):
     model = build_model(args, is_sign=True)
     if not args.pretrained_dir:
         raise ValueError("--pretrained_dir must point to your clean model runs")
-    checkpoint_folder = sorted(glob.glob(args.pretrained_dir + f"/{args.dataset}*{model_name}*{args.pre_dir_suff}*"))
-    assert len(checkpoint_folder) >= 1, f"Found {len(checkpoint_folder)} folders for {model_name} with suffix {args.pre_dir_suff}."
-    checkpoint_folder = Path(checkpoint_folder[0])
-
-    # Select one folder from the checkpoint_folder
-    candidates_checkpoints = sorted(checkpoint_folder.glob("*/checkpoint.pth"))
-    if (checkpoint_folder / "checkpoint.pth").is_file():
-        candidates_checkpoints.insert(0, checkpoint_folder / "checkpoint.pth")
-    if not candidates_checkpoints:
-        raise FileNotFoundError(f"No checkpoint.pth found under {checkpoint_folder}")
+    # A local MNIST experiment may provide its clean checkpoint directly.
+    pretrained_path = Path(args.pretrained_dir)
+    if pretrained_path.is_file():
+        candidates_checkpoints = [pretrained_path]
+    else:
+        checkpoint_folder = sorted(glob.glob(
+            args.pretrained_dir + f"/{args.dataset}*{model_name}*{args.pre_dir_suff}*"
+        ))
+        assert len(checkpoint_folder) >= 1, (
+            f"No checkpoint folder for {model_name} under {args.pretrained_dir}"
+        )
+        checkpoint_folder = Path(checkpoint_folder[0])
+        candidates_checkpoints = sorted(checkpoint_folder.glob("*/checkpoint.pth"))
+        if (checkpoint_folder / "checkpoint.pth").is_file():
+            candidates_checkpoints.insert(0, checkpoint_folder / "checkpoint.pth")
+        if not candidates_checkpoints:
+            raise FileNotFoundError(f"No checkpoint.pth under {checkpoint_folder}")
     for chckpt in chosen_checkpoints:
         if chckpt in candidates_checkpoints:
             candidates_checkpoints.remove(chckpt)
@@ -200,10 +207,13 @@ def main(args):
         p_path = output_dir / f"signature/poison_{poisons_indices[i]}.png"
         poisons_paths[poisons_indices[i]] = p_path
         try:
-            plt.imsave(
-                poisons_paths[poisons_indices[i]],
-                (poison_dataset.data[i] + poison_dataset.watermarks[i]).detach().permute(1, 2, 0).numpy()
-            )
+            signed_image = (poison_dataset.data[i] +
+                            poison_dataset.watermarks[i]).detach().cpu()
+            if signed_image.shape[0] == 1:
+                plt.imsave(p_path, signed_image.squeeze(0).numpy(),
+                           cmap='gray', vmin=0, vmax=1)
+            else:
+                plt.imsave(p_path, signed_image.permute(1, 2, 0).numpy())
         except Exception as e:
             print(f"Failed to save poison {poisons_indices[i]}")
             print(e)
