@@ -110,18 +110,32 @@ def main(args):
 
     # Loading poisons
     poisons_ids = []
+    signed_overrides = {}
     for p in args.poisons_path:
         poisons_dir = Path(p)
         poisons = torch.load(poisons_dir / 'poisons.pth', weights_only=False)
         poisons_paths = poisons['paths']
         for k, v in poisons_paths.items():
             poisons_ids.append(k)
-            train_dataset.samples[k] = v.as_posix()
+            if args.dataset != "MNIST":
+                train_dataset.samples[k] = v.as_posix()
+        if args.dataset == "MNIST":
+            for i, idx in enumerate(poisons["indices"]):
+                signed = (poisons["data"][i] + poisons["watermarks"][i]).detach().cpu()
+                if idx in signed_overrides:
+                    raise ValueError(f"Duplicate signed MNIST index: {idx}")
+                if signed.shape != (1, 28, 28) or signed.min() < -1e-6 or signed.max() > 1 + 1e-6:
+                    raise ValueError(f"Invalid signed MNIST image at index {idx}")
+                signed_overrides[int(idx)] = signed.clamp(0, 1)
         poisons_labels = poisons['labels']
         poisons_indices = poisons['indices']
         for i in range(len(poisons_indices)):
             if poisons_indices[i] not in train_dataset.targets:
                 train_dataset.targets[poisons_indices[i]] = poisons_labels[i]
+
+    if args.dataset == "MNIST":
+        train_dataset.signed_overrides = signed_overrides
+        print(f"Loaded {len(signed_overrides)} signed MNIST images")
 
     if args.dataset == 'ImageNet500' or args.dataset == 'ImageNet1000p08':
         poisons_ids = list(set(poisons_ids).intersection(set(train_dataset.indices)))

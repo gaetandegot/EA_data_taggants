@@ -161,9 +161,34 @@ def build_convnext(args):
     return model
 
 
+class MNISTCNN(torch.nn.Module):
+    """Compact 1-channel classifier for 28x28 MNIST digits."""
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.features = torch.nn.Sequential(
+            torch.nn.Conv2d(1, 16, 3, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.MaxPool2d(2),
+            torch.nn.Conv2d(16, 32, 3, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.MaxPool2d(2),
+        )
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(32 * 7 * 7, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x):
+        return self.classifier(self.features(x))
+
+
 def build_model(args, is_sign=False):
 
-    if args.model.startswith('deit'):
+    if args.model == 'mnist_cnn':
+        model = MNISTCNN(num_classes=args.nb_classes)
+    elif args.model.startswith('deit'):
         model = build_deit(args)
     elif args.model.startswith('resnet'):
         model = build_resnet(args)

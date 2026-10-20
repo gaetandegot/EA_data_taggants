@@ -33,7 +33,7 @@ def get_parser():
     # Data parameters
     parser.add_argument('--dataset', type=str, default='CIFAR10', metavar='D',
                         help='dataset to use (default: CIFAR10)',
-                        choices=['CIFAR10', 'CIFAR100',
+                        choices=['MNIST', 'CIFAR10', 'CIFAR100',
                                  'ImageNet1k', 'ImageNet500', 'ImageNet1000p08', 'TinyImageNet'])
     parser.add_argument('--input_size', type=int, default=224, metavar='N',
                         help='Input size (default: None)')
