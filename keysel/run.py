@@ -18,7 +18,7 @@ from .hits import hits_and_ranks
 from .keys import make_keys
 from .models import build_cifar_model
 from .proxy import MODELS, ROOT, model_dir
-from .scores import head_mask, key_grad, model_params, split_cos, sum_grad, zero_score
+from .scores import flat_head_mask, head_mask, key_grad, model_params, split_cos, sum_grad, zero_score
 from .train_cifar import deadline_hit, train
 
 NC = 100
@@ -88,8 +88,8 @@ def c2(a, data, dev="cuda"):
         return
     Xtr, ytr, _, _ = data
     alice = load_model("resnet18", 0, a.aug)
-    params = model_params(alice); mask = head_mask(alice, params)
-    fmask = torch.cat([torch.full((p.numel(),), bool(m)) for p, m in zip(params, mask)]).to(dev)
+    params = model_params(alice)
+    fmask = flat_head_mask(alice, params).to(dev)
     G = torch.empty(NC, sum(p.numel() for p in params), device=dev)
     for c in range(NC):  # one summed signing gradient per class (fixed signing subset, seed 0)
         idx = signing_subset(ytr, c, SIGN_N, 0).to(dev)
@@ -182,7 +182,12 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=40); ap.add_argument("--steps", type=int, default=240)
     ap.add_argument("--restarts", type=int, default=8); ap.add_argument("--n_c1", type=int, default=100)
     ap.add_argument("--n_c2", type=int, default=10000)
+    ap.add_argument("--smoke", action="store_true", help="tiny end-to-end run into <root>/smoke")
     a = ap.parse_args()
+    if a.smoke:  # 2 existing benign models, few keys/steps, 1 epoch; never touches the real outputs
+        ROOT = ROOT / "smoke"; ROOT.mkdir(exist_ok=True)
+        SAME[:] = SAME[:2]; OTHER[:] = []
+        a.n_c2, a.n_c1, a.restarts, a.steps, a.epochs = 300, 20, 1, 3, 1
     if a.stage == "analyze":
         from .report import analyze
         print(json.dumps(analyze(ROOT), indent=1)); raise SystemExit

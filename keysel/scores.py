@@ -63,3 +63,10 @@ def zero_score(model, x, y, X_sign, chunk=64):
     gs = sum_grad(model, X_sign, y, chunk, params)
     full, head = split_cos(gk, gs, mask)
     return {"full": float(full), "head": float(head), "rank": rank_of(model, x, y)}
+
+
+def flat_head_mask(model, params=None):
+    """Boolean mask over the flattened parameter vector selecting the last layer."""
+    params = params if params is not None else model_params(model)
+    ids = {id(p) for p in head_params(model)}
+    return torch.cat([torch.full((p.numel(),), id(p) in ids) for p in params])
