@@ -188,8 +188,8 @@ if __name__ == "__main__":
         ROOT = ROOT / "smoke"; ROOT.mkdir(exist_ok=True)
         SAME[:] = SAME[:2]; OTHER[:] = []
         a.n_c2, a.n_c1, a.restarts, a.steps, a.epochs = 300, 20, 1, 3, 1
-    if a.stage == "analyze":
-        from .report import analyze
-        print(json.dumps(analyze(ROOT), indent=1)); raise SystemExit
+    if a.stage in ("analyze", "analyze_imagenet"):
+        from . import report
+        print(json.dumps(getattr(report, a.stage)(ROOT), indent=1)); raise SystemExit
     data = load_cifar100(device="cuda")
     {"c0": c0, "c1": c1, "c2": c2, "c5": c5}[a.stage](a, data)

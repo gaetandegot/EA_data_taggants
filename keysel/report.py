@@ -79,3 +79,60 @@ def analyze(root, k_p0=0.01, n_sim=20000):
         out["c3_c1_optimized"] = simulate_selection(c1["opt_full"].astype(float), H1, n_sim=5000)
     (root / "report.json").write_text(json.dumps(out, indent=1))
     return out
+
+
+NEAR_ALICE = ("deit_tiny", "deit_base", "deit3_small", "vit_small", "swin_tiny")
+
+
+def hit_matrix_in(d, near=True):
+    """ImageNet hit columns split into DeiT/ViT-like (near Alice) and other architectures."""
+    cols = [c for c in d if c.startswith("hit_") and (c[4:].startswith(NEAR_ALICE) == near)]
+    return np.stack([d[c].astype(int) for c in cols], 1), cols
+
+
+def analyze_imagenet(root, n_sim=20000, p0=0.01):
+    """I1 (deciles, selection effect), I2 (noise concentration, top-10) and I3 (proxy validation)."""
+    root = Path(root); fig = root / "figures"; fig.mkdir(exist_ok=True)
+    out = {}
+    d = read_csv(root / "i1" / "i1.csv")
+    rng = np.random.default_rng(0)
+    for name, near in (("near", True), ("other", False)):
+        H, cols = hit_matrix_in(d, near)
+        out[f"i1_{name}"] = {"models": [c[4:] for c in cols], "mean_hit_rate": float(H.mean())}
+        for sc in ("zero_full", "zero_head"):
+            s = d[sc].astype(float)
+            rate, lo, hi = decile_hit_rates(s, H, n_boot=500)
+            out[f"i1_{name}"][sc] = {"rate": rate.tolist(), "lo": lo.tolist(), "hi": hi.tolist()}
+            plt.figure(figsize=(5, 3.5))
+            plt.errorbar(range(1, 11), rate, yerr=[rate - lo, hi - rate], fmt="o-")
+            plt.axhline(p0, color="k", ls="--", label="$p_0$"); plt.xlabel(f"{sc} decile")
+            plt.ylabel("benign top-10 hit rate"); plt.title(f"I1 ({name} architectures)"); plt.legend(); plt.tight_layout()
+            plt.savefig(fig / f"i1_{name}_{sc}.png", dpi=150); plt.close()
+            out[f"i1_selection_{name}_{sc}"] = simulate_selection(s, H, n_sim=n_sim)
+            out[f"i1_selection_{name}_{sc}_shuffled"] = simulate_selection(rng.permutation(s), H, n_sim=n_sim)
+    out["spearman_zero_vs_rank_alice"] = {
+        sc: [float(v) if np.ndim(v) == 0 else v.tolist()
+             for v in spearman_ci(d[sc].astype(float), -np.log(d["rank_alice"].astype(float)), 500)]
+        for sc in ("zero_full", "zero_head")}
+    # I2: concentration of benign top-10 predictions on noise
+    z = np.load(root / "i1" / "top10_sets.npz")
+    sets = np.stack([z[k] for k in z.files])
+    conc = noise_concentration(sets, 1000)
+    out["i2"] = {"union": conc["union"], "q_label_var": conc["q_label_var"], "p0": conc["p0"],
+                 "union_per_model": {k: int(len(np.unique(z[k]))) for k in z.files}, "n_keys": int(sets.shape[1])}
+    H_all = np.concatenate([hit_matrix_in(d, True)[0], hit_matrix_in(d, False)[0]], 1)
+    fl = flagged_distribution(H_all, n_sim=5000)
+    out["i2"]["flagged_mean"] = float(fl.mean()); out["i2"]["flagged_q99"] = float(np.quantile(fl, 0.99))
+    plt.figure(figsize=(5, 3.5)); plt.hist(fl, bins=30); plt.xlabel("fraction of benign models flagged (>=2 of 20)")
+    plt.tight_layout(); plt.savefig(fig / "i2_flagged.png", dpi=150); plt.close()
+    plt.figure(figsize=(5, 3.5)); plt.plot(np.sort(conc["q_label"])[::-1]); plt.axhline(p0, color="k", ls="--")
+    plt.yscale("symlog", linthresh=1e-3); plt.xlabel("label (sorted)"); plt.ylabel("benign top-10 rate on noise")
+    plt.tight_layout(); plt.savefig(fig / "i2_q_label.png", dpi=150); plt.close()
+    p = root / "i3" / "i3.csv"
+    if p.exists():
+        c3 = read_csv(p); out["i3"] = {"n_keys": len(c3["key"])}
+        for sc in ("full", "head"):
+            r, ci = spearman_ci(c3[f"zero_{sc}"].astype(float), c3[f"opt_{sc}"].astype(float), 1000)
+            out["i3"][sc] = {"spearman": float(r), "ci": ci.tolist()}
+    (root / "report_imagenet.json").write_text(json.dumps(out, indent=1))
+    return out

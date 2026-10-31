@@ -20,7 +20,12 @@ class Wrapped(nn.Module):
 def head_params(model):
     """Parameters of the final classification layer."""
     net = model.net if isinstance(model, Wrapped) else model
-    head = net.get_classifier() if hasattr(net, "get_classifier") else net.fc
+    if hasattr(net, "get_classifier"):
+        head = net.get_classifier()
+    elif hasattr(net, "fc"):
+        head = net.fc
+    else:  # e.g. the repo's MNISTCNN: last Linear layer
+        head = [m for m in net.modules() if isinstance(m, nn.Linear)][-1]
     return list(head.parameters())
 
 
