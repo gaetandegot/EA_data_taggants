@@ -39,24 +39,31 @@ def decile_hit_rates(score, hits, n_bins=10, n_boot=1000, seed=0):
     return rate, lo, hi
 
 
+def _draw_sets(rng, n, n_sim, K0):
+    """n_sim draws of K0 distinct key indices out of n (vectorised; rows with duplicates are redrawn)."""
+    idx = rng.integers(0, n, (n_sim, K0))
+    while True:
+        s = np.sort(idx, axis=1)
+        bad = (s[:, 1:] == s[:, :-1]).any(1)
+        if not bad.any():
+            return idx
+        idx[bad] = rng.integers(0, n, (bad.sum(), K0))
+
+
 def simulate_selection(score, hits, n_sim=20000, K0=20, K=10, seed=0, tail_t=2):
     """Repeatedly draw K0 keys, keep the K best by score, compare hits per benign model.
 
     hits: (n_keys, n_models). Returns dict: mean hits per kept key (top-K) vs all K0, and the
     fraction of (draw, model) pairs flagged (>= tail_t hits) among the K kept vs among all K0.
     """
-    score, hits = np.asarray(score), np.asarray(hits, dtype=float)
+    score, hits = np.asarray(score, dtype=float), np.asarray(hits, dtype=float)
     rng = np.random.default_rng(seed)
-    n = len(score)
-    kept_mean, all_mean, kept_flag, all_flag = [], [], [], []
-    for _ in range(n_sim):
-        idx = rng.choice(n, K0, replace=False)
-        top = idx[np.argsort(-score[idx], kind="stable")[:K]]
-        hk, ha = hits[top].sum(0), hits[idx].sum(0)
-        kept_mean.append(hk.mean() / K); all_mean.append(ha.mean() / K0)
-        kept_flag.append((hk >= tail_t).mean()); all_flag.append((ha >= tail_t).mean())
-    return {"kept_rate": float(np.mean(kept_mean)), "all_rate": float(np.mean(all_mean)),
-            "kept_flag": float(np.mean(kept_flag)), "all_flag": float(np.mean(all_flag)),
+    idx = _draw_sets(rng, len(score), n_sim, K0)
+    order = np.argsort(-score[idx], axis=1, kind="stable")[:, :K]
+    top = np.take_along_axis(idx, order, axis=1)
+    hk, ha = hits[top].sum(1), hits[idx].sum(1)  # (n_sim, n_models)
+    return {"kept_rate": float(hk.mean() / K), "all_rate": float(ha.mean() / K0),
+            "kept_flag": float((hk >= tail_t).mean()), "all_flag": float((ha >= tail_t).mean()),
             "nominal_kept": float(binom.sf(tail_t - 1, K, hits.mean())),
             "nominal_all": float(binom.sf(tail_t - 1, K0, hits.mean()))}
 

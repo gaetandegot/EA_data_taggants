@@ -176,14 +176,54 @@ def c5(a, data, dev="cuda"):
     print({s: sum(v["hit"][k] for k in keep) for s, v in res["models"].items()}, flush=True)
 
 
+def e2_keys(n_keys, seed=0):
+    """High-q keys (q >= 0.5) drawn at random from the C2 keys. On CIFAR these all have the sink label 39."""
+    from .report import read_csv
+    d = read_csv(ROOT / "c2" / "c2.csv")
+    hc = [c for c in d if c.startswith("hit_")]
+    q = np.stack([d[c].astype(int) for c in hc], 1).mean(1)
+    high = np.random.default_rng(seed).permutation(np.where(q >= 0.5)[0])[:n_keys]
+    return [(int(d["key"][i]), int(d["y"][i]), float(q[i])) for i in high]
+
+
+def e2(a, data, dev="cuda"):
+    """Craft high-q keys with the C1 protocol; compared against C1's random keys by mechanisms.run_e2_analysis."""
+    out = ROOT / a.e2_out; (out / "keys").mkdir(parents=True, exist_ok=True)
+    Xtr, ytr, _, _ = data
+    alice = load_model("resnet18", 0, a.aug)
+    keys = e2_keys(a.n_keys_e2)
+    (out / "keys.json").write_text(json.dumps(keys))
+    for kid, y_csv, qv in keys:
+        f = out / "keys" / f"{kid}.json"
+        if f.exists():
+            continue
+        stop_if_deadline(300)
+        kx, ky = make_keys([kid], 0, 32, 32, NC)
+        x, y = kx[0].to(dev), int(ky[0])
+        assert y == y_csv, "key regeneration mismatch"
+        X = to_float(Xtr[signing_subset(ytr, y, SIGN_N, 0).to(dev)])
+        z = zero_score(alice, x, y, X)
+        t = time.time()
+        r = craft_key(alice, x, y, X, steps=a.steps, restarts=a.restarts, augment=a.aug,
+                      gen=torch.Generator().manual_seed(5000 + kid))
+        f.write_text(json.dumps({"key": kid, "y": y, "q": qv, "zero_full": z["full"], "zero_head": z["head"],
+                                 "rank_alice": z["rank"], "opt_full": r["full"], "opt_head": r["head"],
+                                 "all_full": r["all_full"], "all_head": r["all_head"], "craft_s": time.time() - t}))
+        print(f"e2 key {kid} y {y} q {qv:.2f}: zero {z['full']:.3f} opt {r['full']:.3f} ({time.time() - t:.0f}s)", flush=True)
+    rows = [json.loads((out / "keys" / f"{k[0]}.json").read_text()) for k in keys]
+    (out / "e2_rows.json").write_text(json.dumps(rows))
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("stage"); ap.add_argument("--aug", action="store_true")
     ap.add_argument("--epochs", type=int, default=40); ap.add_argument("--steps", type=int, default=240)
-    ap.add_argument("--restarts", type=int, default=8); ap.add_argument("--n_c1", type=int, default=100)
+    ap.add_argument("--restarts", type=int, default=None, help="default 8 (C1) / 4 (E2)"); ap.add_argument("--n_c1", type=int, default=100)
     ap.add_argument("--n_c2", type=int, default=10000)
     ap.add_argument("--smoke", action="store_true", help="tiny end-to-end run into <root>/smoke")
+    ap.add_argument("--n_keys_e2", type=int, default=40); ap.add_argument("--e2_out", default="e2")
     a = ap.parse_args()
+    if a.restarts is None:
+        a.restarts = 4 if a.stage == "e2" else 8
     if a.smoke:  # 2 existing benign models, few keys/steps, 1 epoch; never touches the real outputs
         ROOT = ROOT / "smoke"; ROOT.mkdir(exist_ok=True)
         SAME[:] = SAME[:2]; OTHER[:] = []
@@ -191,5 +231,8 @@ if __name__ == "__main__":
     if a.stage in ("analyze", "analyze_imagenet"):
         from . import report
         print(json.dumps(getattr(report, a.stage)(ROOT), indent=1)); raise SystemExit
+    if a.stage in ("e1", "e6", "e2_analysis"):
+        from . import mechanisms
+        getattr(mechanisms, f"run_{a.stage}")(ROOT); raise SystemExit
     data = load_cifar100(device="cuda")
-    {"c0": c0, "c1": c1, "c2": c2, "c5": c5}[a.stage](a, data)
+    {"c0": c0, "c1": c1, "c2": c2, "c5": c5, "e2": e2}[a.stage](a, data)
