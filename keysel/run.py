@@ -231,7 +231,7 @@ if __name__ == "__main__":
     if a.stage in ("analyze", "analyze_imagenet"):
         from . import report
         print(json.dumps(getattr(report, a.stage)(ROOT), indent=1)); raise SystemExit
-    if a.stage in ("e1", "e6", "e2_analysis"):
+    if a.stage in ("e1", "e6", "e2_analysis", "e5_analysis"):
         from . import mechanisms
         getattr(mechanisms, f"run_{a.stage}")(ROOT); raise SystemExit
     data = load_cifar100(device="cuda")

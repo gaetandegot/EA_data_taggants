@@ -37,6 +37,8 @@ EVAL_TF = T.Compose([T.Resize(256), T.CenterCrop(224), T.ToTensor()])
 N_SIGN = 128
 I1_KEYS = range(100000, 105000)
 I3_KEYS = range(200000, 200030)
+E5_RANDOM = range(210000, 210015)
+FRESH_NOISE = range(300000, 300200)
 
 
 def load_index(split="train"):
@@ -165,6 +167,65 @@ def i3(a, dev="cuda"):
     write_csv(out / "i3.csv", [json.loads(p.read_text()) for p in sorted(out.glob("*.json"))])
 
 
+def e5(a, dev="cuda"):
+    """Sink-label keys vs random keys, same crafting protocol (a.restarts, default 1), DeiT-S.
+
+    Sink keys: for each label with an I1 key at q >= 0.3, the I1 key with the highest q. Random keys: fresh ids.
+    Also stores each sink label's strength = mean benign top-10 hit rate over 200 fresh noise images.
+    Keys are crafted interleaved (sink, random, sink, ...) so a deadline cut leaves a balanced sample.
+    """
+    from .report import read_csv
+    out = ROOT / "e5"; (out / "keys").mkdir(parents=True, exist_ok=True)
+    files, labels = load_index("train")
+    d = read_csv(ROOT / "i1" / "i1.csv")
+    hc = [c for c in d if c.startswith("hit_")]
+    q = np.stack([d[c].astype(int) for c in hc], 1).mean(1)
+    y, key = d["y"].astype(int), d["key"].astype(int)
+    sinks = []
+    for c in sorted(set(y[q >= 0.3])):
+        i = np.where(y == c)[0][np.argmax(q[y == c])]
+        sinks.append((int(key[i]), int(c), float(q[i])))
+    sinks.sort(key=lambda t: -t[2])
+    rand_ids = list(E5_RANDOM)
+    meta = out / "meta.json"
+    if not meta.exists():  # benign q of the random keys and strength of each sink label (forward passes only)
+        zoo = load_zoo(ZOO, dev)
+        rx, ry = make_keys(rand_ids, 0, 64, 224, 1000)
+        rq = np.mean([hits_and_ranks(m, rx.to(dev), ry, 10)[0].numpy() for _, m in zoo], 0)
+        fx, _ = make_keys(FRESH_NOISE, 0, 64, 224, 1000)
+        fx = fx.to(dev)
+        strength = {c: float(np.mean([hits_and_ranks(m, fx, torch.full((len(fx),), c), 10)[0].float().mean().item()
+                                      for _, m in zoo])) for _, c, _ in sinks}
+        meta.write_text(json.dumps({"sinks": sinks, "random": [(k, int(c), float(v)) for k, c, v in zip(rand_ids, ry.tolist(), rq)],
+                                    "strength": strength}))
+        del zoo
+        torch.cuda.empty_cache()
+    m = json.loads(meta.read_text())
+    jobs = []
+    for s_, r_ in zip(m["sinks"], m["random"]):
+        jobs += [("sink",) + tuple(s_), ("random",) + tuple(r_)]
+    alice = build_timm_model(ALICE)[0].to(dev).eval()
+    for grp, kid, c, qv in jobs:
+        f = out / "keys" / f"{kid}.json"
+        if f.exists():
+            continue
+        stop_if_deadline(a.key_minutes * 60)
+        kx, ky = make_keys([kid], 0, 64, 224, 1000)
+        x, yk = kx[0].to(dev), int(ky[0])
+        assert yk == c, "key regeneration mismatch"
+        X = signing_images(c, files, labels).to(dev)
+        z = zero_score(alice, x, c, X, chunk=32)
+        t = time.time()
+        r = craft_key(alice, x, c, X, steps=a.steps, restarts=a.restarts, augment=False,
+                      gen=torch.Generator().manual_seed(kid), chunk=16, mode="chunked")
+        f.write_text(json.dumps({"group": grp, "key": kid, "y": c, "q": qv,
+                                 "strength": m["strength"].get(str(c)) if grp == "sink" else None,
+                                 "zero_full": z["full"], "zero_head": z["head"], "rank_alice": z["rank"],
+                                 "opt_full": r["full"], "opt_head": r["head"], "craft_s": time.time() - t}))
+        print(f"e5 {grp} key {kid} y {c} q {qv:.2f}: zero {z['full']:.3f} -> opt {r['full']:.3f} ({time.time() - t:.0f}s)", flush=True)
+    write_csv(out / "e5.csv", [json.loads(p.read_text()) for p in sorted((out / "keys").glob("*.json"))])
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("stage"); ap.add_argument("--n_val", type=int, default=5000)
@@ -172,8 +233,11 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=240); ap.add_argument("--restarts", type=int, default=4)
     ap.add_argument("--key_minutes", type=int, default=45)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--restarts_e5", type=int, default=1)
     a = ap.parse_args()
     if a.smoke:  # separate outputs, tiny sizes (signing-image cache is shared and reusable)
         ROOT = ROOT / "smoke_in"; ROOT.mkdir(exist_ok=True)
         a.n_i1, a.n_i3, a.steps, a.restarts = 40, 1, 4, 1
-    {"zoo_check": zoo_check, "i1": i1, "i3": i3}[a.stage](a)
+    if a.stage == "e5" and a.restarts_e5 is not None:
+        a.restarts = a.restarts_e5
+    {"zoo_check": zoo_check, "i1": i1, "i3": i3, "e5": e5}[a.stage](a)

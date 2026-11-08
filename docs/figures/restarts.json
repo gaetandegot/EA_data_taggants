@@ -1,0 +1,60 @@
+{
+ "c1_full": {
+  "set": "C1 random keys, full-gradient cosine",
+  "n_keys": 100,
+  "n_restarts": 8,
+  "within_key_sd_mean": 0.001588415357684255,
+  "within_key_sd_max": 0.005563821271649289,
+  "within_key_range_mean": 0.004728400000000006,
+  "within_key_range_max": 0.017809999999999993,
+  "between_key_sd_of_best": 0.010785465586574922,
+  "between_key_range_of_best": 0.05328999999999995,
+  "gain_best_over_single_mean": 0.0022997000000000135,
+  "gain_best_over_single_max": 0.009140000000000037,
+  "icc1": 0.9760306254683546,
+  "split_half_spearman": 0.9865375326310158,
+  "spearman_single_vs_best": 0.9864025586889781
+ },
+ "e2_full": {
+  "set": "E2 sink-label keys, full-gradient cosine",
+  "n_keys": 40,
+  "n_restarts": 4,
+  "within_key_sd_mean": 0.001309006148112905,
+  "within_key_sd_max": 0.0025758997698688006,
+  "within_key_range_mean": 0.0029086217284202574,
+  "within_key_range_max": 0.00553131103515625,
+  "between_key_sd_of_best": 0.006131317428149708,
+  "between_key_range_of_best": 0.028525590896606445,
+  "gain_best_over_single_mean": 0.0014116555452346803,
+  "gain_best_over_single_max": 0.00553131103515625,
+  "icc1": 0.9472702590744774,
+  "split_half_spearman": 0.9210131332082552,
+  "spearman_single_vs_best": 0.9328330206378989
+ },
+ "e2_head": {
+  "set": "E2 sink-label keys, last-layer cosine (same restarts)",
+  "n_keys": 40,
+  "n_restarts": 4,
+  "within_key_sd_mean": 0.0010981666225298747,
+  "within_key_sd_max": 0.0030592110031579466,
+  "within_key_range_mean": 0.0024484813213348387,
+  "within_key_range_max": 0.007366299629211426,
+  "between_key_sd_of_best": 0.002922407003263563,
+  "between_key_range_of_best": 0.012399435043334961,
+  "gain_best_over_single_mean": 0.001014980673789978,
+  "gain_best_over_single_max": 0.00431978702545166,
+  "icc1": 0.8536159319486631,
+  "split_half_spearman": 0.9463414634146343,
+  "spearman_single_vs_best": 0.9515947467166981
+ },
+ "c1_selection_1_vs_8": {
+  "mean_overlap_of_10": 9.51555,
+  "frac_identical_sets": 0.5435,
+  "overlap_distribution": {
+   "7": 0.00025,
+   "8": 0.02745,
+   "9": 0.4288,
+   "10": 0.5435
+  }
+ }
+}

@@ -59,3 +59,15 @@ def test_kept_probability_and_e2_analysis():
     r = e2_analysis(rows, c1, n_boot=100)
     assert r["opt_full"]["auc_vs_random"] > 0.95 and r["opt_full"]["implied_ratio"] > 1.8
     assert 0.3 < r["zero_full"]["auc_vs_random"] < 0.7 and 0.6 < r["zero_full"]["implied_ratio"] < 1.4
+
+
+def test_e5_analysis():
+    from keysel.mechanisms import e5_analysis
+    rng = np.random.default_rng(0)
+    rows = [{"group": "sink", "strength": s, "opt_full": 0.96 + 0.01 * s + rng.normal(0, 0.001), "opt_head": 0.9,
+             "zero_full": 0.05, "zero_head": 0.1} for s in np.linspace(0.2, 0.7, 12)]
+    rows += [{"group": "random", "strength": None, "opt_full": 0.95 + rng.normal(0, 0.003), "opt_head": 0.9,
+              "zero_full": 0.05, "zero_head": 0.1} for _ in range(12)]
+    r = e5_analysis(rows, n_boot=100)
+    assert r["opt_full"]["auc_vs_random"] > 0.95 and r["opt_full"]["implied_ratio"] > 1.8
+    assert r["opt_full"]["spearman_with_strength"] > 0.8

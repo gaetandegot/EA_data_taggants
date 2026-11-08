@@ -212,3 +212,32 @@ def run_e2_analysis(root, name="e2"):
     plt.tight_layout(); plt.savefig(fig / f"{name}_scores.png", dpi=150); plt.close()
     print(json.dumps(res, indent=1))
     return res
+
+
+def e5_analysis(rows, n_boot=2000, seed=0):
+    """Sink-label vs random keys crafted with the same protocol (ImageNet): AUC, implied selection effect,
+    and, across sink labels, whether the scores follow the label's sink strength."""
+    sink = [r for r in rows if r["group"] == "sink"]; rand = [r for r in rows if r["group"] == "random"]
+    out = {"n_sink": len(sink), "n_random": len(rand)}
+    rng = np.random.default_rng(seed)
+    strength = np.array([r["strength"] for r in sink])
+    for sc in ("opt_full", "opt_head", "zero_full", "zero_head"):
+        h = np.array([r[sc] for r in sink]); ref = np.array([r[sc] for r in rand])
+        kh = np.array([kept_probability(v, ref) for v in h])
+        boots = [2 * np.mean([kept_probability(v, ref[rng.integers(0, len(ref), len(ref))])
+                              for v in h[rng.integers(0, len(h), len(h))]]) for _ in range(n_boot)]
+        out[sc] = {"auc_vs_random": float(stats.mannwhitneyu(h, ref).statistic / (len(h) * len(ref))),
+                   "mannwhitney_p": float(stats.mannwhitneyu(h, ref).pvalue),
+                   "mean_sink": float(h.mean()), "mean_random": float(ref.mean()),
+                   "implied_ratio": float(2 * kh.mean()), "implied_ratio_ci": np.percentile(boots, [2.5, 97.5]).tolist(),
+                   "spearman_with_strength": float(stats.spearmanr(h, strength).statistic) if len(h) > 2 else None}
+    return out
+
+
+def run_e5_analysis(root):
+    root = Path(root)
+    rows = [json.loads(p.read_text()) for p in sorted((root / "e5" / "keys").glob("*.json"))]
+    res = e5_analysis(rows)
+    (root / "e5_analysis.json").write_text(json.dumps(res, indent=1))
+    print(json.dumps(res, indent=1))
+    return res
