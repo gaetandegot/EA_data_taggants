@@ -29,16 +29,25 @@ def head_params(model):
     return list(head.parameters())
 
 
+def make_norm(norm, c):
+    """'bn' = BatchNorm2d; 'gn1' = GroupNorm(1, c) (LayerNorm over C,H,W: per-image, no running stats)."""
+    if norm == "bn":
+        return nn.BatchNorm2d(c)
+    if norm == "gn1":
+        return nn.GroupNorm(1, c)
+    raise ValueError(norm)
+
+
 class BasicBlock(nn.Module):
-    def __init__(self, cin, cout, stride):
+    def __init__(self, cin, cout, stride, norm="bn"):
         super().__init__()
         self.c1 = nn.Conv2d(cin, cout, 3, stride, 1, bias=False)
-        self.b1 = nn.BatchNorm2d(cout)
+        self.b1 = make_norm(norm, cout)
         self.c2 = nn.Conv2d(cout, cout, 3, 1, 1, bias=False)
-        self.b2 = nn.BatchNorm2d(cout)
+        self.b2 = make_norm(norm, cout)
         self.shortcut = nn.Sequential()
         if stride != 1 or cin != cout:
-            self.shortcut = nn.Sequential(nn.Conv2d(cin, cout, 1, stride, bias=False), nn.BatchNorm2d(cout))
+            self.shortcut = nn.Sequential(nn.Conv2d(cin, cout, 1, stride, bias=False), make_norm(norm, cout))
 
     def forward(self, x):
         o = F.relu(self.b1(self.c1(x)))
@@ -47,20 +56,38 @@ class BasicBlock(nn.Module):
 
 
 class CifarResNet18(nn.Module):
-    def __init__(self, num_classes=100):
+    def __init__(self, num_classes=100, norm="bn"):
         super().__init__()
         self.conv = nn.Conv2d(3, 64, 3, 1, 1, bias=False)
-        self.bn = nn.BatchNorm2d(64)
+        self.bn = make_norm(norm, 64)
         layers, cin = [], 64
         for cout, stride in [(64, 1), (64, 1), (128, 2), (128, 1), (256, 2), (256, 1), (512, 2), (512, 1)]:
-            layers.append(BasicBlock(cin, cout, stride))
+            layers.append(BasicBlock(cin, cout, stride, norm))
             cin = cout
         self.layers = nn.Sequential(*layers)
         self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
         x = self.layers(F.relu(self.bn(self.conv(x))))
-        return self.fc(F.adaptive_avg_pool2d(x, 1).flatten(1))
+        # mean == adaptive_avg_pool2d(x, 1); its CUDA backward is non-deterministic
+        return self.fc(x.mean((2, 3)))
+
+
+class TinyCNNGN(nn.Module):
+    """Small GroupNorm(1) CNN for tests and fast prototyping (~25k params)."""
+
+    def __init__(self, num_classes=100):
+        super().__init__()
+        self.c1 = nn.Conv2d(3, 16, 3, 2, 1, bias=False)
+        self.n1 = nn.GroupNorm(1, 16)
+        self.c2 = nn.Conv2d(16, 32, 3, 2, 1, bias=False)
+        self.n2 = nn.GroupNorm(1, 32)
+        self.fc = nn.Linear(32, num_classes)
+
+    def forward(self, x):
+        x = F.relu(self.n1(self.c1(x)))
+        x = F.relu(self.n2(self.c2(x)))
+        return self.fc(x.mean((2, 3)))
 
 
 class _OptA(nn.Module):
@@ -134,6 +161,8 @@ CIFAR100_STD = (0.2673, 0.2564, 0.2762)
 def build_cifar_model(name, num_classes=100):
     nets = {
         "resnet18": lambda: CifarResNet18(num_classes),
+        "resnet18_gn": lambda: CifarResNet18(num_classes, norm="gn1"),
+        "tinycnn_gn": lambda: TinyCNNGN(num_classes),
         "resnet20": lambda: CifarResNetN(3, num_classes),
         "resnet56": lambda: CifarResNetN(9, num_classes),
         "vgg11": lambda: CifarVGG11(num_classes),
