@@ -76,8 +76,9 @@ class CifarResNet18(nn.Module):
 class TinyCNNGN(nn.Module):
     """Small GroupNorm(1) CNN for tests and fast prototyping (~25k params)."""
 
-    def __init__(self, num_classes=100):
+    def __init__(self, num_classes=100, act="relu"):
         super().__init__()
+        self.act = F.relu if act == "relu" else F.gelu  # gelu: smooth, for testing linearisation theory
         self.c1 = nn.Conv2d(3, 16, 3, 2, 1, bias=False)
         self.n1 = nn.GroupNorm(1, 16)
         self.c2 = nn.Conv2d(16, 32, 3, 2, 1, bias=False)
@@ -85,8 +86,8 @@ class TinyCNNGN(nn.Module):
         self.fc = nn.Linear(32, num_classes)
 
     def forward(self, x):
-        x = F.relu(self.n1(self.c1(x)))
-        x = F.relu(self.n2(self.c2(x)))
+        x = self.act(self.n1(self.c1(x)))
+        x = self.act(self.n2(self.c2(x)))
         return self.fc(x.mean((2, 3)))
 
 
@@ -163,6 +164,7 @@ def build_cifar_model(name, num_classes=100):
         "resnet18": lambda: CifarResNet18(num_classes),
         "resnet18_gn": lambda: CifarResNet18(num_classes, norm="gn1"),
         "tinycnn_gn": lambda: TinyCNNGN(num_classes),
+        "tinysmooth_gn": lambda: TinyCNNGN(num_classes, act="gelu"),
         "resnet20": lambda: CifarResNetN(3, num_classes),
         "resnet56": lambda: CifarResNetN(9, num_classes),
         "vgg11": lambda: CifarVGG11(num_classes),
