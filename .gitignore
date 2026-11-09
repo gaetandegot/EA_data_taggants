@@ -52,3 +52,6 @@ docs/laptop_watchdog_plan.md
 
 # local-only laptop watchdog
 scripts/laptop_watchdog/
+
+# local-only measurement plan
+docs/phi_identity_measurement_plan.md
