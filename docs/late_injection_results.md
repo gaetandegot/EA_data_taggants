@@ -13,7 +13,7 @@ Plan and theory: `docs/late_injection_statement_of_purpose.md`. Run folder: `/Da
 5. **Gradient matching (GM) is far from optimal in this white-box setting:** the exact iteration is 1.5 nats of key CE better than GM at all three start epochs, on Alice's own seed and data order (§6). Transfer to other seeds has not been tested.
 6. **The PDF's problem B is not needed as a starting point:** started from the GM poisons, the exact iteration reaches almost the same key CE as from B (§6).
 7. Anchored B and GM reach the same number of hits at each start epoch (0, 2, 3 of 4 at $k_0=32$, 28, 24); B has the lower key CE (§5). The anchored linear model gets steadily worse as $k_0$ moves earlier.
-8. A ~20% gap between predicted and real gain remains at tiny steps; a real-network finite-difference check finds no sign of a gradient bug but does not explain it either (§7). A targeted diagnostic is running.
+8. The ~20% gap between predicted and real gain at small steps is not a gradient bug (§7, §8). It comes from Bob's training dynamics, not from $J$, and the cause is that the real SGD map of this ReLU network is not smooth: over one epoch, any perturbation produces a response of roughly fixed size (about 2e-3 in parameter norm), on top of the linear one (§8).
 
 ## 1. Where does the clean dynamics stop amplifying?
 
@@ -108,7 +108,7 @@ No hits. For comparison GM has CE 4.13. The gains looked saturated, but the next
 
 - **Not a local optimum.** The predicted gain per unit radius settles at about −5.4 (the gradient does not vanish). The best step is about ε/8 (real $\Delta J=-0.31$); ε/2 makes things worse. The fixed ε/2 rule only accepted tiny improvements.
 - **The anchoring error is smaller after re-centering but not zero:** poisons that differ by one iteration still change the kicks by cosine 0.87–0.93 (B → iteration 2) and 0.67–0.82 (iteration 2 → 3). It disappears with the step size (cosine 1.000 below ε/128).
-- **Unexplained:** real/predicted stalls at about 0.8 between ε/32 and ε/512 although the anchoring is perfect, and curvature of $J$ should vanish. Candidates: ReLU kinks (the gradient is discontinuous across kinks, which adds a term of the same order as the Hessian term; autodiff's Hessian does not see it), or a gradient mistake not covered by tests. The finite-difference check of §7 found no sign of a gradient bug.
+- **Gap at small radii:** real/predicted stalls at about 0.8 between ε/32 and ε/512 although the anchoring is perfect. §8 shows why: the real training map of this ReLU network is not smooth (a fixed-size response of about 2e-3 per epoch from ReLUs switching), so no first-order model can be accurate at very small steps. It is not a gradient bug (§7).
 - Iteration rule changed to a radius ladder (ε/2, ε/4, ε/8, ε/16): from the same adjoint, try each radius and keep the lowest real key CE.
 
 ## 5. Earlier start epochs: $k_0 = 28$ and $k_0 = 24$ (anchored B, E2)
@@ -221,9 +221,59 @@ At the iteration-4 poisons (key CE 3.027), the analytic directional derivative o
 - The real objective is not smooth at this scale: forward and backward differences disagree (proportional direction at ε/256: −1.68 vs −6.21; signed: −41.0 vs −45.9). This fits the ReLU-kink explanation, which is not proven.
 - Not covered: the 72% of pixels sitting at the ε boundary, which move only inward in the real steps. So the §4 gap remains unexplained.
 
-## 8. Not done yet
+## 8. Diagnostic of the gap between predicted and real gain ($k_0=32$, iteration-4 poisons)
 
-- Diagnostic of the ~20% gap at small radii (running, `keysel/phi_gapdiag.py`): split real/predicted into a dynamics factor and a curvature-of-$J$ factor, locate by epoch where the real and linear displacements diverge, and test the tangent against finite differences of the real SGD map (ReLU-kink signature).
+`keysel/phi_gapdiag.py` → `e2/k32/recenter/gapdiag.json`; even-part test → `even_part.json`.
+
+**Split of real/predicted.** For a candidate step, predicted = linear model; the real step is checked by training Bob.
+
+| radius | real / predicted | = dynamics factor | × curvature of $J$ | cos(real, linear displacement) | ‖real‖ / ‖linear‖ |
+|---|---|---|---|---|---|
+| ε/32 | 0.788 | 0.840 | 0.938 | 0.66 | 1.35 |
+| ε/128 | 0.842 | 0.859 | 0.980 | 0.40 | 2.22 |
+
+- The adjoint along Bob and the forward tangent give the same prediction to 4e-5 on the real network: no inconsistency in the code.
+- **$J$ behaves like a smooth function** (its shortfall drops from 6% to 2% for a 4× smaller step). **The floor is in the dynamics** (about 0.85 at both radii).
+- The real and linear displacements are identical right after the first poison step (by construction) and already differ after the 97 clean steps of the next epoch (cos 0.75, real 1.33× larger at ε/32); later epochs carry the difference without amplifying it. Most of the extra displacement is invisible to the keys ($q^\top$ is still 84–86% right while the full vectors disagree by ~100%).
+
+**Even part of the real SGD map.** $E(s)=\|\tfrac12[S(\theta+sv)+S(\theta-sv)]-S(\theta)\|$ for a random direction $v$ of norm 0.016, at epoch 33. The slope of $\log E$ vs $\log s$ is 2 for a smooth map, about ½ for randomly crossed gradient jumps (ReLU kinks), and 0 for a fixed floor.
+
+| perturbation norm | 1.6e-2 | 4.0e-3 | 1.0e-3 | 2.5e-4 | 6.3e-5 | 1.6e-5 |
+|---|---|---|---|---|---|---|
+| single poison step: $E$ | 3.0e-4 | 1.4e-4 | 6.8e-5 | 3.6e-5 | 3.1e-5 | 2.7e-5 |
+| slope | | 0.53 | 0.54 | 0.46 | 0.11 | 0.09 |
+| one epoch (98 steps): $E$ | 2.06e-3 | 1.93e-3 | 1.90e-3 | 1.85e-3 | 1.83e-3 | 1.83e-3 |
+| slope | | 0.05 | 0.01 | 0.02 | 0.01 | 0.00 |
+
+- **One step:** randomly crossed ReLU kinks (slope ≈ ½) down to a perturbation of about 2.5e-4, then a floor of about 3e-5, the size expected from float32 rounding.
+- **One epoch:** a floor of about 2e-3 already from a perturbation of 4e-3 down to 1.6e-5 (three decades). At the smallest sizes the odd part is flat too (about 1.1e-3), so the whole response is the floor. Over 97 steps × 512 images, any perturbation, however small, flips some ReLUs, and each flip changes an update by a fixed amount that is carried forward. So the training map behaves as if it were discontinuous at a scale of about 2e-3.
+- This explains the gap: at ε/32 the real displacement (norm ≈ 0.016) carries an extra response of about 2e-3 (≈ 13%), at ε/128 a much larger share, which is why the real displacement grows relative to the linear one and turns away from it as the step shrinks. The kink test of the tangent against finite differences shows the same thing (relative error 0.32, 0.68, 1.71 at scales 1, ¼, 1/16 on one epoch).
+- Consequence for the method: no first-order model can be accurate below a step of roughly this size; the exact gradient remains useful for larger steps (ε/16 to ε/4), where the real gain is 40–80% of the prediction.
+
+**Direct count of ReLU switches** (`keysel/phi_switches.py` → `e2/k32/recenter/switches.json`; same state and random direction as the even-part test). A switch is an (image, unit) pair whose ReLU sign differs between the two parameter vectors.
+
+At one state ($\theta$ vs $\theta+hv$):
+
+| perturbation norm | 1.6e-2 | 4.0e-3 | 1.0e-3 | 2.5e-4 | 6.3e-5 | 1.6e-5 |
+|---|---|---|---|---|---|---|
+| switches, poison batch (400 images) | 17,967 | 4,564 | 1,106 | 281 | 91 | 56 |
+| switches, clean batch (512 images) | 21,961 | 5,515 | 1,308 | 344 | 103 | 39 |
+| log-log slope (poison / clean) | | 0.99 / 1.00 | 1.02 / 1.04 | 0.99 / 0.96 | 0.81 / 0.87 | 0.35 / 0.70 |
+
+Along one epoch (two trajectories started at $\theta$ and $\theta+hv$, switches counted at every step on that step's batch):
+
+| initial perturbation | switches at step 0 | mean, steps 0–9 | mean, last 10 steps | distance after the epoch |
+|---|---|---|---|---|
+| 1.6e-2 | 17,967 | 34,560 | 74,630 | 1.6e-2 (1.0×) |
+| 1.0e-3 | 1,106 | 10,997 | 61,804 | 2.4e-3 (2.4×) |
+| 6.3e-5 | 91 | 7,520 | 60,376 | 2.1e-3 (33×) |
+| 1.6e-5 | 56 | 10,238 | 64,805 | 2.1e-3 (137×) |
+
+- **One step:** the number of switches is proportional to the perturbation (slope 1) over almost three decades. Even a perturbation of norm 2.5e-4 switches about 300 activations per batch, so the autodiff linearization of a single step is never exact at practical step sizes. Below about 1e-4 the slope flattens, where the even-part test also reached its float32 floor.
+- **One epoch (cascade):** the late switch count (about 60,000–75,000 per step) barely depends on the starting size, over a factor 1000, and every small perturbation grows to a distance of about 2e-3, the floor measured by the even-part test. This directly confirms the cascade explanation of §8.
+
+## 9. Not done yet
+
 - Transfer test: Bob with another seed and data order on the ladder poisons (postponed).
 - Larger trust radii (above ε/2) when starting far from the optimum.
 - E3/E4: 10 keys, 3 key sets, GM vs exact iteration, minimal number of images for 2 hits out of 10 at top-1.
