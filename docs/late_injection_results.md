@@ -14,6 +14,8 @@ Plan and theory: `docs/late_injection_statement_of_purpose.md`. Run folder: `/Da
 6. **The PDF's problem B is not needed as a starting point:** started from the GM poisons, the exact iteration reaches almost the same key CE as from B (§6).
 7. Anchored B and GM reach the same number of hits at each start epoch (0, 2, 3 of 4 at $k_0=32$, 28, 24); B has the lower key CE (§5). The anchored linear model gets steadily worse as $k_0$ moves earlier.
 8. The ~20% gap between predicted and real gain at small steps is not a gradient bug (§7, §8). It comes from Bob's training dynamics, not from $J$, and the cause is that the real SGD map of this ReLU network is not smooth: over one epoch, any perturbation produces a response of roughly fixed size (about 2e-3 in parameter norm), on top of the linear one (§8).
+9. **With a smooth activation (SiLU) the gap closes at small steps and the ladder converges much faster** (§9): real/predicted is 0.93 at ε/32 and 0.98 at ε/128 (ReLU: 0.79 and 0.84), the one-epoch floor of the SGD map drops by at least 140×, and the ladder from B's poisons reaches **4 of 4 hits at iteration 2** (key CE 0.73) and CE 0.37 after 4 iterations at $k_0=32$ (ReLU: 2.58, 1 of 4). At the radii the ladder actually uses (ε/8 to ε/2) real/predicted is still only 0.2–0.6, so the model stays a direction finder, not a predictor.
+10. On SiLU the anchored B is **not** better than GM (CE 2.77 / 1 hit vs 2.34 / 2 hits at $k_0=32$), the reverse of ReLU. The cause is untested; B-cos (§9) is the test, with results pending.
 
 ## 1. Where does the clean dynamics stop amplifying?
 
@@ -272,7 +274,60 @@ Along one epoch (two trajectories started at $\theta$ and $\theta+hv$, switches 
 - **One step:** the number of switches is proportional to the perturbation (slope 1) over almost three decades. Even a perturbation of norm 2.5e-4 switches about 300 activations per batch, so the autodiff linearization of a single step is never exact at practical step sizes. Below about 1e-4 the slope flattens, where the even-part test also reached its float32 floor.
 - **One epoch (cascade):** the late switch count (about 60,000–75,000 per step) barely depends on the starting size, over a factor 1000, and every small perturbation grows to a distance of about 2e-3, the floor measured by the even-part test. This directly confirms the cascade explanation of §8.
 
-## 9. Not done yet
+## 9. Smooth activation: ResNet18-GN with SiLU ($k_0=32$)
+
+Purpose: remove the ReLU kinks that §8 blames for the predicted-vs-real gap. Run `/Data/gaetan.degot/checkpoints/phi_r18gn_silu_s0`: the same run (same data, seed, keys, 40 epochs, lr 0.05, weight decay 5e-4, cosine schedule, batch 512, ε = 16/255; the config was not retuned) with `resnet18_gn_silu` (every ReLU replaced by SiLU; `keysel/run_phi_arch.py`). Alice's test accuracy is 0.448; her key CE is 7.17 (margins −6.6, −6.5, −6.7, −5.1), different from the ReLU Alice (6.59), so numbers below are not comparable one-to-one with §2–§8. Same caveats: 4 keys, one seed.
+
+### Anchored B vs GM vs random (E2, `e2/k32/results.json`)
+
+| poisons | hits | key margins | key CE (Alice 7.17) | real $q^\top\eta$ | real $\Delta J$ | $\|\eta\|$ | mean kick anchoring cos (epochs 33–39) |
+|---|---|---|---|---|---|---|---|
+| problem B | 1/4 (key 2) | −2.8, −0.4, +0.5, −1.7 | 2.77 | −70.9 | −4.39 | 0.76 | 0.03 |
+| gradient matching | 2/4 (keys 1, 2) | −3.7, +1.3, +1.7, −0.7 | **2.34** | −7.9 | −4.83 | 0.12 | 0.55 |
+| random noise | 0/4 | −6.9, −5.9, −6.0, −4.9 | 6.90 | −0.27 | −0.27 | 0.034 | 0.99 |
+
+- **GM beats anchored B here (2.34 vs 2.77, 2 vs 1 hits), the opposite of ReLU** (§2: B 3.65, GM 4.13). The cause is unknown. Observations: B moves the parameters 6× farther (0.76 vs 0.12) and its kicks at Bob's parameters are almost unrelated to those at Alice's (cos 0.03, norm ratio 0.06–0.08); the real $q^\top\eta$ (−70.9) is even larger than the predicted −61.2 (ratio 1.16, $\cos(\eta_{\rm lin},\eta)=0.66$), yet $\Delta J$ is only −4.39, because $J$ saturates when the margins grow. Hypothesis (untested): B overshoots the linear objective, so it spends its budget on a direction that the linear model rates highly but that does not translate into key CE. One seed of keys, so it could also be luck.
+- Reading the large $q^\top\eta$ as agreement between model and reality would be wrong: it is not a validation, only $\Delta J$ and the hits count.
+
+### The gap at small steps (`recenter/gapdiag.json`, B poisons, SiLU)
+
+| radius | predicted $\Delta J$ | real $\Delta J$ | real / predicted | = dynamics factor | × curvature of $J$ | cos(real, linear displacement) |
+|---|---|---|---|---|---|---|
+| ε/32 | −0.230 | −0.214 | **0.930** (ReLU 0.788) | 0.946 (0.840) | 0.983 (0.938) | 0.9998 (0.66) |
+| ε/128 | −0.054 | −0.053 | **0.984** (ReLU 0.842) | 0.989 (0.859) | 0.995 (0.980) | 1.0000 (0.40) |
+
+(ReLU values in brackets, from §8, taken at the iteration-4 poisons, so not the same poisons.) The gap closes as the step shrinks, and the real and linear displacements agree in direction and norm (norm ratio 0.998). The kink test (tangent vs finite differences of the real SGD map) gives ratio 1.000 and relative error 2e-4 to 1e-3 at all three scales, against 0.32–1.71 on ReLU. This confirms that the 20% gap of §8 comes from the ReLU kinks.
+
+**Even part of the real SGD map** (`even_part.json`, B poisons, epoch 33, perturbation norm 0.016 down to 1.6e-5; "one epoch" = the 98-step span):
+
+| | one poison step | one epoch |
+|---|---|---|
+| SiLU, $E$ at norm 1.6e-2 | 2.5e-6 | 1.4e-5 |
+| SiLU, $E$ at norm 1.6e-5 | 5.1e-7 | 3.0e-6 |
+| ReLU (§8), $E$ at 1.6e-2 / 1.6e-5 | 3.0e-4 / 2.7e-5 | 2.1e-3 / 1.8e-3 |
+
+The nonlinear response is 120× (step) to 140–600× (epoch) smaller than on ReLU, and the measured log-slope is 0.1–0.4, not 2: at these sizes the response sits near the float32 rounding floor, so the expected slope 2 of a smooth map is not resolved. What the test shows is the absence of the fixed 2e-3 response, not a measured slope of 2.
+
+### Ladder from B's poisons (`e2/k32/recenter`, 3-radius ladder, adaptive)
+
+| iteration | kept radius | predicted $\Delta J$ → real | key CE (Alice 7.17) | hits (margins) |
+|---|---|---|---|---|
+| start (B) | | | 2.774 | 1/4 |
+| 1 | ε/4 | −3.39 → −1.28 | 1.492 | 2/4 |
+| 2 | ε/2 | −3.69 → −0.76 | 0.732 | **4/4** (0.86, 3.49, 1.70, 0.73) |
+| 3 | ε/8 | −0.75 → −0.23 | 0.507 | 4/4 |
+| 4 | ε/16 | −0.25 → −0.13 | **0.373** | 4/4 (1.87, 3.77, 3.05, 1.39) |
+
+- Compared with ReLU at the same $k_0$ (CE 2.58, 1/4 hits after 4 ladder iterations plus 4 fixed-radius ones), the SiLU run reaches 4/4 hits after two iterations. Part of this is the smoother problem, part may be the different Alice and keys; not separated.
+- **Real/predicted at the radii the ladder actually uses is still low.** For the candidates tried: ε/2 0.17, 0.21 (iterations 1, 2) and the real gain turns positive at iterations 3 (+0.42); ε/4 0.38, 0.31; ε/8 0.62, 0.56, 0.30; ε/16 0.53. So the smooth activation removes the floor at ε/32 and below, but the first-order model is still only a direction finder at ε/8 and above. Likely culprits are the curvature of $J$ and the nonlinear transport, but this was not measured at these radii.
+- Only 4 of the 8 planned iterations were done: all user processes were killed at about 06:35 during iteration 5 (cause unverified). The ladder resumes with the same command (`--init B`). The ladder CE is still falling by 0.13 per iteration at iteration 4.
+
+### Pending (queued for the GPU window)
+
+- **B-cos** (`keysel/phi_bcos.py`: cosine version of problem B, scope group / global) at $k_0=32, 28, 24$ on SiLU, compared with the B and GM rows above; E2 at $k_0=28$ and 24 on SiLU (adjoints must be recomputed). Results: not yet available.
+- **Ladder started from B-cos** (`--init bcos`), compared with the B start above (CE 0.373 after 4 iterations).
+
+## 10. Not done yet
 
 - Transfer test: Bob with another seed and data order on the ladder poisons (postponed).
 - Larger trust radii (above ε/2) when starting far from the optimum.
