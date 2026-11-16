@@ -173,6 +173,7 @@ if __name__ == "__main__":
     ap.add_argument("--k0", type=int, default=32)
     ap.add_argument("--radii", default="0.03125,0.0078125")
     ap.add_argument("--kink-epoch", type=int, default=33)
+    ap.add_argument("--poisons", default="poisons_snapshot_iter4.pt", help="file in <run>/e2/k<k0>/recenter/")
     a = ap.parse_args()
-    run_gapdiag(a.run, a.k0, tuple(float(x) for x in a.radii.split(",")), kink_epoch=a.kink_epoch,
+    run_gapdiag(a.run, a.k0, tuple(float(x) for x in a.radii.split(",")), kink_epoch=a.kink_epoch, poisons=a.poisons,
                 device="cuda" if torch.cuda.is_available() else "cpu", log=lambda s: print(s, flush=True))

@@ -45,3 +45,16 @@ def test_kink_test_on_smooth_net(tmp_path):
     for po in (False, True):
         rows = kink_test(rp, 2, pres[2], Xo, d, (1.0, 0.25), poison_only=po, log=lambda *_: None)
         assert all(abs(r["ratio_fd_tangent"] - 1) < 1e-4 and r["cos_fd_tangent"] > 1 - 1e-8 for r in rows)
+
+
+def test_even_part_slope_two_on_smooth_net(tmp_path):
+    """Smooth net: the even part of the SGD map is second order (slope 2)."""
+    from keysel.phi_evenpart import even_part
+    rp, kx, ky, final, q, X = setup(tmp_path)
+    Xo = signed_small(X, 0.01)
+    th, starts, pres = bob_traj(rp, 1, Xo)
+    g = torch.Generator().manual_seed(4)
+    v = 1e-2 * torch.randn(len(th), generator=g, dtype=D)
+    res = even_part(rp, 2, pres[2], Xo, v, (1.0, 0.25, 0.0625), log=lambda *_: None)
+    for mode in ("poison_step", "span"):
+        assert all(abs(r["slope_even"] - 2) < 0.1 for r in res[mode][1:]), res[mode]
