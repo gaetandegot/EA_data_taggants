@@ -108,7 +108,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     set_deterministic()
     run = Path(run)
     rp, P, cfg = replay_from_run(run, device)
-    subdir = subdir or ("recenter_gm" if init == "gm" else "recenter")
+    subdir = subdir or {"gm": "recenter_gm", "bcos": "recenter_bcos", "bcos_global": "recenter_bcos_global"}.get(init, "recenter")
     out = run / out_name / f"k{k0}" / subdir
     out.mkdir(parents=True, exist_ok=True)
     kx, ky = P["keys"]
@@ -125,6 +125,9 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
         X_cur = _load(cur_f)["X_signed"].to(device, rp.dtype)
     elif init == "gm":  # start from the gradient-matching poisons of run R2 (crafted on Alice's final model)
         X_cur = P["X_signed"].to(device, rp.dtype)
+    elif init in ("bcos", "bcos_global"):  # cosine problem B (phi_bcos), scope group / global
+        scope = "global" if init == "bcos_global" else "group"
+        X_cur = _load(run / out_name / f"k{k0}" / f"poisons_Bcos_{scope}.pt")["X_signed"].to(device, rp.dtype)
     else:  # start from the anchored problem-B poisons of E2
         X_cur = _load(run / out_name / f"k{k0}" / "poisons_B.pt")["X_signed"].to(device, rp.dtype)
     if radius is not None:  # single fixed radius (pixel units)
@@ -137,7 +140,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     for it in range(1, iters + 1):
         t0 = time.time()
         q_end = batch_grad(rp.model, thB, kx, ky)
-        Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log)
+        Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log, offload=True)
         log(f"[recenter] iteration {it}: adjoint along Bob ready ({time.time() - t0:.0f}s)")
         cands = []
         cur_ladder = ladder
@@ -246,7 +249,8 @@ if __name__ == "__main__":
     ap.add_argument("--ladder", default="0.5,0.25,0.125,0.0625", help="trust radii as fractions of eps; best real J kept")
     ap.add_argument("--radii", default=None, help="probe radii as fractions of eps (default 0.5,0.25,0.125,0.0625,0.03125)")
     ap.add_argument("--tag", default="", help="suffix of the probe output file")
-    ap.add_argument("--init", default="B", choices=["B", "gm"], help="starting poisons: anchored B (E2) or GM (R2)")
+    ap.add_argument("--init", default="B", choices=["B", "gm", "bcos", "bcos_global"],
+                    help="starting poisons: anchored B (E2), GM (R2) or B-cos (group / global scope)")
     ap.add_argument("--adaptive", action="store_true", help="after the first iteration try {r/2, r, 2r} around the kept radius")
     ap.add_argument("--stop-gain", type=float, default=0.0, help="stop when the kept real gain in key CE is below this")
     ap.add_argument("--steps", type=int, default=120)
