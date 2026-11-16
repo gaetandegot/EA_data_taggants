@@ -108,7 +108,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     set_deterministic()
     run = Path(run)
     rp, P, cfg = replay_from_run(run, device)
-    subdir = subdir or {"gm": "recenter_gm", "bcos": "recenter_bcos", "bcos_global": "recenter_bcos_global"}.get(init, "recenter")
+    subdir = subdir or {"gm": "recenter_gm", "gm8": "recenter_gm8", "bcos": "recenter_bcos", "bcos_global": "recenter_bcos_global"}.get(init, "recenter")
     out = run / out_name / f"k{k0}" / subdir
     out.mkdir(parents=True, exist_ok=True)
     kx, ky = P["keys"]
@@ -121,10 +121,15 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     hist_f = out / "history.json"
     hist = json.loads(hist_f.read_text()) if hist_f.exists() else {"alice_ce": jA["ce"], "attempts": [], "accepted": []}
     cur_f = out / "poisons_current.pt"
+    if hist.get("stopped"):
+        log(f"[recenter k0={k0}] already stopped ({hist['stopped']}); nothing to do")
+        return hist
     if cur_f.exists():
         X_cur = _load(cur_f)["X_signed"].to(device, rp.dtype)
     elif init == "gm":  # start from the gradient-matching poisons of run R2 (crafted on Alice's final model)
         X_cur = P["X_signed"].to(device, rp.dtype)
+    elif init == "gm8":  # gradient matching with 8 restarts (keysel.phi_gm8), same images
+        X_cur = _load(run / "gm8" / "poisons.pt")["X_signed"].to(device, rp.dtype)
     elif init in ("bcos", "bcos_global"):  # cosine problem B (phi_bcos), scope group / global
         scope = "global" if init == "bcos_global" else "group"
         X_cur = _load(run / out_name / f"k{k0}" / f"poisons_Bcos_{scope}.pt")["X_signed"].to(device, rp.dtype)
@@ -184,9 +189,13 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
                 f"hits {rep['hit']} margins {[round(m, 2) for m in rep['margin']]}")
             if stop_gain and -rec["actual_dJ"] < stop_gain:
                 log(f"[recenter] real gain {-rec['actual_dJ']:.3f} below {stop_gain}: stopping")
+                hist["stopped"] = f"gain below {stop_gain}"
+                hist_f.write_text(json.dumps(hist, indent=1))
                 break
         else:
             log("[recenter] no radius of the ladder improved the real J: stopping")
+            hist["stopped"] = "no radius improved"
+            hist_f.write_text(json.dumps(hist, indent=1))
             break
     return hist
 
@@ -249,7 +258,7 @@ if __name__ == "__main__":
     ap.add_argument("--ladder", default="0.5,0.25,0.125,0.0625", help="trust radii as fractions of eps; best real J kept")
     ap.add_argument("--radii", default=None, help="probe radii as fractions of eps (default 0.5,0.25,0.125,0.0625,0.03125)")
     ap.add_argument("--tag", default="", help="suffix of the probe output file")
-    ap.add_argument("--init", default="B", choices=["B", "gm", "bcos", "bcos_global"],
+    ap.add_argument("--init", default="B", choices=["B", "gm", "gm8", "bcos", "bcos_global"],
                     help="starting poisons: anchored B (E2), GM (R2) or B-cos (group / global scope)")
     ap.add_argument("--adaptive", action="store_true", help="after the first iteration try {r/2, r, 2r} around the kept radius")
     ap.add_argument("--stop-gain", type=float, default=0.0, help="stop when the kept real gain in key CE is below this")
