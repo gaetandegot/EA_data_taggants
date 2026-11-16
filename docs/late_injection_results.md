@@ -322,10 +322,43 @@ The nonlinear response is 120× (step) to 140–600× (epoch) smaller than on Re
 - **Real/predicted at the radii the ladder actually uses is still low.** For the candidates tried: ε/2 0.17, 0.21 (iterations 1, 2) and the real gain turns positive at iterations 3 (+0.42); ε/4 0.38, 0.31; ε/8 0.62, 0.56, 0.30; ε/16 0.53. So the smooth activation removes the floor at ε/32 and below, but the first-order model is still only a direction finder at ε/8 and above. Likely culprits are the curvature of $J$ and the nonlinear transport, but this was not measured at these radii.
 - Only 4 of the 8 planned iterations were done: all user processes were killed at about 06:35 during iteration 5 (cause unverified). The ladder resumes with the same command (`--init B`). The ladder CE is still falling by 0.13 per iteration at iteration 4.
 
+### Restarts: 2 vs 8 (SiLU run, gradient matching) and B-cos at $k_0=32$, $28$
+
+The Data Taggants paper uses 8 restarts for gradient matching; our baseline used 2 (also for B and B-cos). GM was re-crafted with 8 restarts on Alice's final model (`gm8/poisons.pt`; same images, keys and random seeds, so the first two restarts are the earlier ones).
+
+| | key 0 | key 1 | key 2 | key 3 |
+|---|---|---|---|---|
+| GM match score (cosine, full / head), 2 restarts | 0.725 / 0.883 | 0.896 / 0.948 | 0.932 / 0.947 | 0.860 / 0.907 |
+| 8 restarts | 0.728 / 0.887 | 0.897 / 0.947 | 0.932 / 0.944 | 0.865 / 0.906 |
+| real Bob margins at $k_0=32$, 2 restarts | −3.73 | +1.29 | +1.68 | −0.74 |
+| 8 restarts | −3.75 | +1.25 | +1.61 | −0.80 |
+
+- Real key CE at $k_0=32$: 2.335 with 2 restarts, 2.376 with 8 (2/4 hits both, same keys). The extra restarts changed the match score by at most 0.005 and the real outcome not at all within noise.
+- Restarts hardly differ for B-cos either: the weighted-cosine objective of restart 0 vs 1 differs by 0.1–2% (for example group scope at $k_0=32$: −0.1745 / −0.1760, −0.3863 / −0.3934, −0.4461 / −0.4474, −0.3942 / −0.3887).
+- So, in this setting, restarts add little: the objectives behave as if they had one dominant basin, and the best of several random starts is not much better than the first. One seed, 4 keys, SiLU only; the ReLU run and other seeds were not tested, so this should be rechecked there before stating it as a general result. The 2-restart comparisons above (GM vs B vs B-cos) are not weakened by it.
+
+### B-cos (cosine version of problem B, `keysel/phi_bcos.py`) at $k_0=32, 28$
+
+| $k_0$ | poisons | hits | key CE | real $\Delta J$ | $\|\eta\|$ | kick anchoring (mean cos) |
+|---|---|---|---|---|---|---|
+| 32 | B | 1/4 | 2.77 | −4.39 | 0.76 | 0.03 |
+| 32 | GM | 2/4 | **2.34** | −4.83 | 0.12 | 0.55 |
+| 32 | B-cos, group scope | 0/4 | 3.89 | −3.28 | 0.10 | 0.43 |
+| 32 | B-cos, global scope | 1/4 | 2.98 | −4.19 | 0.095 | 0.71 |
+| 28 | B | 2/4 | 1.98 | −5.19 | 1.22 | |
+| 28 | GM | 3/4 | **1.48** | −5.68 | 0.27 | |
+| 28 | B-cos, group scope | 2/4 | 2.59 | −4.58 | 0.26 | 0.39 |
+
+(Alice's key CE 7.17. The $k_0=28$ B and GM anchoring values were not re-read; $k_0=28$ global scope and $k_0=24$ were not finished.)
+
+- B-cos does not beat GM and, at $k_0=32$, not B either. It removes B's overshoot (‖η‖ 0.10 vs 0.76), but the key CE is still worse.
+- Scope matters at $k_0=32$ (global 2.98 vs group 3.89), consistent with the caveat that the adjoint is for the mean over keys, so the group scope aligns each key with the joint target; one $k_0$ only.
+- GM is the best of the anchored methods on SiLU at $k_0=32$ and $28$. Linear score of the B objective at $k_0=32$: B −61.2, GM −15.3, B-cos −12.5 (group) / −9.2 (global): B wins its own objective by far and loses on the real one.
+
 ### Pending (queued for the GPU window)
 
-- **B-cos** (`keysel/phi_bcos.py`: cosine version of problem B, scope group / global) at $k_0=32, 28, 24$ on SiLU, compared with the B and GM rows above; E2 at $k_0=28$ and 24 on SiLU (adjoints must be recomputed). Results: not yet available.
-- **Ladder started from B-cos** (`--init bcos`), compared with the B start above (CE 0.373 after 4 iterations).
+- **Ladder from the 8-restart GM poisons** on SiLU at $k_0=32, 28, 24$ (`e2/k{k0}/recenter_gm8`, up to 8 iterations each, early stop when the kept gain is below 0.02; started 2026-11-17). First iteration at $k_0=32$ starts from key CE 2.376 (2/4 hits).
+- B-cos at $k_0=28$ with global scope and at $k_0=24$ (needs E2 there first): not run; low priority after the results above.
 
 ## 10. Not done yet
 
