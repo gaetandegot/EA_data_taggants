@@ -38,9 +38,13 @@ def make_norm(norm, c):
     raise ValueError(norm)
 
 
+ACTS = {"relu": F.relu, "silu": F.silu}  # silu (swish): smooth drop-in for relu in ResNets (Ramachandran et al. 2017)
+
+
 class BasicBlock(nn.Module):
-    def __init__(self, cin, cout, stride, norm="bn"):
+    def __init__(self, cin, cout, stride, norm="bn", act="relu"):
         super().__init__()
+        self.act = ACTS[act]
         self.c1 = nn.Conv2d(cin, cout, 3, stride, 1, bias=False)
         self.b1 = make_norm(norm, cout)
         self.c2 = nn.Conv2d(cout, cout, 3, 1, 1, bias=False)
@@ -50,25 +54,26 @@ class BasicBlock(nn.Module):
             self.shortcut = nn.Sequential(nn.Conv2d(cin, cout, 1, stride, bias=False), make_norm(norm, cout))
 
     def forward(self, x):
-        o = F.relu(self.b1(self.c1(x)))
+        o = self.act(self.b1(self.c1(x)))
         o = self.b2(self.c2(o))
-        return F.relu(o + self.shortcut(x))
+        return self.act(o + self.shortcut(x))
 
 
 class CifarResNet18(nn.Module):
-    def __init__(self, num_classes=100, norm="bn"):
+    def __init__(self, num_classes=100, norm="bn", act="relu"):
         super().__init__()
+        self.act = ACTS[act]
         self.conv = nn.Conv2d(3, 64, 3, 1, 1, bias=False)
         self.bn = make_norm(norm, 64)
         layers, cin = [], 64
         for cout, stride in [(64, 1), (64, 1), (128, 2), (128, 1), (256, 2), (256, 1), (512, 2), (512, 1)]:
-            layers.append(BasicBlock(cin, cout, stride, norm))
+            layers.append(BasicBlock(cin, cout, stride, norm, act))
             cin = cout
         self.layers = nn.Sequential(*layers)
         self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
-        x = self.layers(F.relu(self.bn(self.conv(x))))
+        x = self.layers(self.act(self.bn(self.conv(x))))
         # mean == adaptive_avg_pool2d(x, 1); its CUDA backward is non-deterministic
         return self.fc(x.mean((2, 3)))
 
@@ -163,6 +168,7 @@ def build_cifar_model(name, num_classes=100):
     nets = {
         "resnet18": lambda: CifarResNet18(num_classes),
         "resnet18_gn": lambda: CifarResNet18(num_classes, norm="gn1"),
+        "resnet18_gn_silu": lambda: CifarResNet18(num_classes, norm="gn1", act="silu"),
         "tinycnn_gn": lambda: TinyCNNGN(num_classes),
         "tinysmooth_gn": lambda: TinyCNNGN(num_classes, act="gelu"),
         "resnet20": lambda: CifarResNetN(3, num_classes),
