@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="__REFRESH__">
+<title>Taggants Watchdog</title>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --ink:#1b1f27; --muted:#667085; --line:#e3e6ec; --soft:#eef0f4;
+  --ok:#1a7f4b; --okbg:#e3f4ea; --warn:#a15c00; --warnbg:#fdf0d8; --err:#b42318; --errbg:#fde7e4; --info:#2f5fb3; --infobg:#e6eefb;
+  --accent:#3b6fd4; --mono:ui-monospace,Consolas,"Cascadia Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1218; --card:#171b23; --ink:#e6e9ef; --muted:#8e97a8; --line:#262c38; --soft:#1f2430;
+    --ok:#4cc38a; --okbg:#12301f; --warn:#e8b04a; --warnbg:#35290f; --err:#ff7b6e; --errbg:#3a1714; --info:#7aa5f0; --infobg:#16243d;
+    --accent:#6f9bf0;
+  }
+}
+*{box-sizing:border-box}
+html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1500px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:20px;margin:0 0 2px;font-weight:650}
+.sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+.grid{display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.card.inactive{opacity:.55}
+.card-h{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between;margin-bottom:12px}
+.card-h .name{font-size:17px;font-weight:650}
+.card-h .name small{font-weight:400;color:var(--muted);font-size:13px;margin-left:6px}
+.meta{color:var(--muted);font-size:12.5px}
+.cols{display:grid;gap:18px;grid-template-columns:minmax(0,1fr)}
+@media (min-width:1100px){.cols{grid-template-columns:minmax(0,5fr) minmax(0,6fr)}}
+.sec{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px}
+.sec:first-child{margin-top:0}
+.stages{display:flex;gap:6px;flex-wrap:wrap}
+.stage{padding:4px 10px;border-radius:999px;font-size:12.5px;border:1px solid var(--line);color:var(--muted);background:var(--soft)}
+.stage.done{color:var(--ok);background:var(--okbg);border-color:transparent}
+.stage.cur{color:var(--accent);background:var(--infobg);border-color:var(--accent);font-weight:600}
+.bar{height:8px;background:var(--soft);border-radius:99px;overflow:hidden;margin:6px 0}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.live{font:11.5px/1.35 var(--mono);color:var(--muted);word-break:break-all;background:var(--soft);padding:6px 8px;border-radius:6px;margin-top:6px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
+.kv b{font-weight:600}.kv span:nth-child(odd){color:var(--muted)}
+.badges{display:flex;flex-wrap:wrap;gap:6px}
+.badge{padding:3px 9px;border-radius:7px;font-size:12.5px;background:var(--soft);white-space:nowrap}
+.badge.ok{background:var(--okbg);color:var(--ok)}.badge.warn{background:var(--warnbg);color:var(--warn)}
+.badge.err{background:var(--errbg);color:var(--err)}.badge.info{background:var(--infobg);color:var(--info)}
+.probs{display:grid;gap:5px;margin-top:2px}
+.prob{padding:6px 10px;border-radius:8px;font-size:13px}
+.prob.error{background:var(--errbg);color:var(--err)}.prob.warning{background:var(--warnbg);color:var(--warn)}.prob.info{background:var(--infobg);color:var(--info)}
+.prob b{text-transform:uppercase;font-size:11px;letter-spacing:.05em;margin-right:6px}
+.charts{display:grid;gap:14px}
+.chartbox{position:relative;height:230px}
+.chartbox canvas{width:100%!important}
+.nochart{font-size:12.5px;color:var(--muted)}
+.nochart table{border-collapse:collapse;margin-top:4px}
+.nochart td,.nochart th{padding:2px 10px 2px 0;text-align:left;font-weight:400}
+.nochart th{color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:2px 10px;font-size:12px;cursor:pointer}
+.chip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tl{max-height:260px;overflow:auto;border-top:1px solid var(--line)}
+.ev{display:grid;grid-template-columns:118px 104px 1fr;gap:8px;padding:5px 2px;border-bottom:1px solid var(--line);font-size:12.5px}
+.ev .t{color:var(--muted)}
+.ev .k{font-size:11.5px}
+.ev .k i{font-style:normal;padding:1px 7px;border-radius:5px;background:var(--soft)}
+.ev.warning .k i{background:var(--warnbg);color:var(--warn)}.ev.error .k i{background:var(--errbg);color:var(--err)}
+.ev .src{color:var(--muted);font-size:11px;margin-left:4px}
+.banner{padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px}
+.banner.warn{background:var(--warnbg);color:var(--warn)}.banner.err{background:var(--errbg);color:var(--err)}
+.mono{font-family:var(--mono);font-size:12px}
+table.w{border-collapse:collapse;width:100%;font-size:13px}
+table.w td,table.w th{padding:4px 10px 4px 0;text-align:left;border-bottom:1px solid var(--line)}
+table.w th{color:var(--muted);font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Taggants Watchdog</h1>
+  <div class="sub" id="sub"></div>
+  <div class="grid" id="machines"></div>
+  <div class="card" style="margin-top:16px" id="watch"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" onerror="window.__nochart=1"></script>
+<script>
+const DATA = /*__DATA__*/null;
+const $ = (s, r) => (r || document).querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pageNow = Date.now();
+const ts = s => s ? new Date(s).getTime() : NaN;
+const fmtDate = s => { const d = new Date(s); return isNaN(d) ? '-' : d.toLocaleString('en-GB', {weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}); };
+const fmtDur = sec => {
+  if (sec == null || isNaN(sec)) return 'n/a';
+  sec = Math.max(0, Math.round(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+};
+const age = s => fmtDur((pageNow - ts(s)) / 1000);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const STAGES = ['pretrain', 'sign', 'validate', 'detect'];
+const KIND_ORDER = ['launch','exit','killed','window_kill','rearm','stage_done','key_signed','exception_marker','gave_up','check_failed','problem','info'];
+const charts = [];
+
+function stageProgress(L) {
+  const st = L.current_stage, p = st && L.progress && L.progress[st];
+  if (!p) return null;
+  if (st === 'sign') return {stage: st, done: p.keys_done, total: p.n_keys, unit: 'key', live: p.live, per: p.seconds_per_key};
+  if (st === 'detect') return {stage: st, done: p.done ? 1 : 0, total: 1, unit: '', live: null, per: null};
+  return {stage: st, done: p.epochs_done, total: p.epochs_total, unit: 'epoch', live: p.live, per: p.epoch_seconds};
+}
+
+function badge(cls, txt) { return `<span class="badge ${cls}">${txt}</span>`; }
+
+function healthBadges(L, M) {
+  const h = L.health || {}, out = [];
+  out.push(badge(h.cron_installed ? 'ok' : 'err', 'cron ' + (h.cron_installed ? 'armed' : 'MISSING')));
+  const hb = h.heartbeat_age_seconds;
+  out.push(badge(hb == null ? '' : hb > 900 ? 'warn' : 'ok', 'heartbeat ' + (hb == null ? 'n/a' : fmtDur(hb))));
+  out.push(badge(h.pipeline_running ? 'ok' : 'info', h.pipeline_running ? `running (${fmtDur(h.pipeline_uptime_seconds)})` : 'not running'));
+  out.push(badge(h.gave_up ? 'err' : h.failures > 0 ? 'warn' : 'ok', `failures ${h.failures}/${h.max_failures}${h.gave_up ? ' - GAVE UP' : ''}`));
+  const gw = h.gpu_window;
+  if (gw) {
+    const left = gw.seconds != null ? gw.seconds - (pageNow - ts(L.checked_at)) / 1000 : null;
+    const lbl = gw.state === 'open' ? `GPU window open, closes in ${fmtDur(left)}` : gw.state === 'closed' ? `GPU window closed, opens in ${fmtDur(left)}` : 'GPU window unknown';
+    out.push(badge(gw.state === 'open' ? 'ok' : '', lbl));
+  }
+  if (h.gpu_mem_used_mb != null) out.push(badge('', `GPU mem ${(h.gpu_mem_used_mb / 1024).toFixed(1)} GiB`));
+  return out.join('');
+}
+
+function renderCard(M) {
+  const L = M.latest, S = M.status;
+  const el = document.createElement('section');
+  el.className = 'card';
+  const checkAge = S.last_check ? age(S.last_check) + ' ago' : 'never';
+  let head = `<div class="card-h"><div class="name">${esc(M.alias)}<small>${esc(L && L.host || '')}</small></div>`;
+  if (L && L.active) {
+    const c = L.config || {};
+    head += `<div class="meta"><span class="mono">${esc(L.run_name)}</span> &middot; ${esc(c.model)} &middot; ${esc(c.opt)} lr ${esc(c.lr)} &middot; ${esc(c.epochs)} ep &middot; ${esc(c.n_keys)} keys</div>`;
+  }
+  head += `<div class="meta">checked ${esc(checkAge)}${S.last_check ? ' (' + esc(fmtDate(S.last_check)) + ')' : ''}</div></div>`;
+  let body = head;
+
+  if (S.last_ok === false) {
+    body += `<div class="banner ${M.problems.some(p => p.severity === 'error') ? 'err' : 'warn'}">Last check failed: ${esc(S.error)}${L ? '. Showing data from the last successful check (' + age(L.checked_at) + ' old).' : ''}</div>`;
+  }
+  if (!L) {
+    el.innerHTML = body + `<div class="meta">No data yet.</div>` + probsHtml(M);
+    return el;
+  }
+  if (!L.active) {
+    el.classList.add('inactive');
+    el.innerHTML = body + `<div class="meta">No active run on this machine. Arm one with <span class="mono">bash scripts/launch_supervised.sh --install &lt;OUTPUT_ROOT&gt;</span>.</div>` + probsHtml(M);
+    return el;
+  }
+
+  // left column: progress, health
+  const sp = stageProgress(L);
+  let left = `<div class="sec">Pipeline</div><div class="stages">` + STAGES.map(s => {
+    const p = L.progress && L.progress[s];
+    const cls = p && p.done ? 'done' : (L.current_stage === s ? 'cur' : '');
+    return `<span class="stage ${cls}">${p && p.done ? '&#10003; ' : ''}${s}</span>`;
+  }).join('') + `</div>`;
+  if (L.all_done) {
+    left += `<div class="sec">Status</div><div>${badge('ok', 'All stages done')}</div>`;
+    const d = L.progress && L.progress.detect;
+    if (d && d.result_tail) left += `<div class="live">${esc(d.result_tail)}</div>`;
+  } else if (sp) {
+    const pct = sp.total ? Math.min(100, 100 * sp.done / sp.total) : 0;
+    left += `<div class="sec">${esc(sp.stage)}${sp.unit ? ': ' + sp.unit + ' ' + esc(sp.done) + ' / ' + esc(sp.total) : ''}</div>
+      <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>`;
+    if (sp.live) left += `<div class="live">${esc(sp.live)}</div>`;
+  }
+  const eta = M.eta;
+  left += `<div class="sec">Time left</div><div class="kv">
+    <span>Remaining GPU time</span><b>${L.remaining_gpu_seconds == null ? 'n/a' : fmtDur(L.remaining_gpu_seconds)}</b>
+    <span>Estimated completion</span><b>${!eta ? 'n/a' : eta.finish ? esc(fmtDate(eta.finish)) + ` <span class="meta">(${eta.windows} GPU window${eta.windows > 1 ? 's' : ''})</span>` : 'more than 90 days'}</b></div>`;
+  left += `<div class="sec">Health</div><div class="badges">${healthBadges(L, M)}</div>`;
+  left += `<div class="sec">Problems</div>` + (probsHtml(M) || `<div class="badges">${badge('ok', 'none')}</div>`);
+
+  // right column: charts + timeline
+  let right = `<div class="charts"><div id="c-pre-${esc(M.alias)}"></div><div id="c-val-${esc(M.alias)}"></div></div>`;
+  right += `<div class="sec">Events, last 14 days</div><div class="chips" data-alias="${esc(M.alias)}"></div><div class="tl" data-tl="${esc(M.alias)}"></div>`;
+
+  el.innerHTML = body + `<div class="cols"><div>${left}</div><div>${right}</div></div>`;
+  return el;
+}
+
+function probsHtml(M) {
+  const ps = (M.problems || []).slice().sort((a, b) => ({error:0, warning:1, info:2}[a.severity] - {error:0, warning:1, info:2}[b.severity]));
+  if (!ps.length) return '';
+  return `<div class="probs">` + ps.map(p => `<div class="prob ${esc(p.severity)}"><b>${esc(p.severity)}</b>${esc(p.msg)}</div>`).join('') + `</div>`;
+}
+
+function renderTimeline(M, el, active) {
+  const evs = (M.timeline || []).filter(e => !active.size || active.has(e.kind));
+  el.innerHTML = evs.length ? evs.map(e => `<div class="ev ${esc(e.severity)}"><span class="t">${esc(fmtDate(e.at))}</span>
+    <span class="k"><i>${esc(e.kind)}</i></span><span>${esc(e.msg)}<span class="src">${esc(e.source)}</span></span></div>`).join('') : '<div class="meta" style="padding:8px 0">No events.</div>';
+}
+
+function wireTimeline(M, root) {
+  const chips = $(`.chips[data-alias="${M.alias}"]`, root), tl = $(`.tl[data-tl="${M.alias}"]`, root);
+  if (!chips) return;
+  const kinds = [...new Set((M.timeline || []).map(e => e.kind))].sort((a, b) => (KIND_ORDER.indexOf(a) + 99) % 99 - (KIND_ORDER.indexOf(b) + 99) % 99);
+  const active = new Set();
+  chips.innerHTML = kinds.map(k => `<button class="chip" data-k="${esc(k)}">${esc(k)}</button>`).join('');
+  chips.addEventListener('click', ev => {
+    const b = ev.target.closest('.chip'); if (!b) return;
+    const k = b.dataset.k; active.has(k) ? active.delete(k) : active.add(k);
+    b.classList.toggle('on', active.has(k));
+    renderTimeline(M, tl, active);
+  });
+  renderTimeline(M, tl, active);
+}
+
+// ---- charts (Chart.js from CDN, with table fallback)
+function csvCols(csv) { const ix = {}; csv.columns.forEach((c, i) => ix[c] = i); return ix; }
+function series(csv, ix, name) { return csv.rows.map(r => ({x: r[ix.epoch], y: r[ix[name]]})); }
+
+function lineChart(host, title, datasets, opts) {
+  host.innerHTML = `<div class="sec">${esc(title)}</div><div class="chartbox"><canvas></canvas></div>`;
+  const c = new Chart($('canvas', host), {
+    type: 'line', data: {datasets},
+    options: Object.assign({
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false, interaction: {mode: 'nearest', axis: 'x', intersect: false},
+      elements: {point: {radius: 0, hitRadius: 6}, line: {borderWidth: 1.6, tension: .15}},
+      plugins: {legend: {position: 'bottom', labels: {boxWidth: 10, boxHeight: 10, color: css('--muted'), font: {size: 11}}}},
+      scales: {
+        x: {type: 'linear', title: {display: true, text: 'epoch', color: css('--muted')}, grid: {color: css('--line')}, ticks: {color: css('--muted')}},
+        y: {grid: {color: css('--line')}, ticks: {color: css('--muted')}},
+        y2: {position: 'right', grid: {display: false}, ticks: {color: css('--muted')}}
+      }
+    }, opts || {})
+  });
+  charts.push(c);
+  return c;
+}
+
+function fallbackTable(host, title, csv, cols) {
+  const ix = csvCols(csv), last = csv.rows[csv.rows.length - 1];
+  host.innerHTML = `<div class="sec">${esc(title)}</div><div class="nochart">Chart library unavailable (offline?). Latest epoch ${esc(last[ix.epoch])}:<table>` +
+    cols.map(c => `<tr><th>${esc(c)}</th><td>${last[ix[c]] == null ? '-' : Number(last[ix[c]]).toFixed(4)}</td></tr>`).join('') + `</table></div>`;
+}
+
+function renderCharts(M) {
+  const L = M.latest; if (!L || !L.active || !L.train_csv) return;
+  const A = M.alias, ok = typeof Chart !== 'undefined';
+  const pre = L.train_csv.pretrain, val = L.train_csv.validate;
+  const accent = css('--accent'), err = css('--err'), ink = css('--ink'), okc = css('--ok');
+  if (pre && pre.rows.length) {
+    const host = $('#c-pre-' + A), ix = csvCols(pre), cols = ['train_loss', 'val_loss', 'val_accuracy'];
+    if (!ok) fallbackTable(host, 'Pretrain', pre, cols);
+    else lineChart(host, 'Pretrain: loss and accuracy', [
+      {label: 'train loss', data: series(pre, ix, 'train_loss'), borderColor: accent, yAxisID: 'y'},
+      {label: 'val loss', data: series(pre, ix, 'val_loss'), borderColor: err, yAxisID: 'y'},
+      {label: 'val accuracy', data: series(pre, ix, 'val_accuracy'), borderColor: okc, borderDash: [5, 3], yAxisID: 'y2'}]);
+  }
+  if (val && val.rows.length) {
+    const host = $('#c-val-' + A), ix = csvCols(val);
+    if (!ok) fallbackTable(host, 'Validate', val, ['val_accuracy', 'tgt_top10_accuracy', 'psn_accuracy']);
+    else {
+      const ds = [{label: 'val accuracy', data: series(val, ix, 'val_accuracy'), borderColor: ink, borderWidth: 2.2}];
+      if (ix.tgt_top10_accuracy != null) ds.push({label: 'key hit rate (top-10)', data: series(val, ix, 'tgt_top10_accuracy'), borderColor: accent, borderWidth: 1.6});
+      if (ix.psn_accuracy != null) ds.push({label: 'poisoned accuracy', data: series(val, ix, 'psn_accuracy'), borderColor: err, borderDash: [5, 3]});
+      lineChart(host, 'Validate: accuracy and key hit rate', ds, {scales: {x: {type: 'linear', title: {display: true, text: 'epoch', color: css('--muted')}, grid: {color: css('--line')}, ticks: {color: css('--muted')}}, y: {min: 0, grid: {color: css('--line')}, ticks: {color: css('--muted')}}}});
+    }
+  }
+}
+
+// ---- watchdog section
+function renderWatch() {
+  const W = DATA.watchdog, lr = W.last_run;
+  const runs = (W.tasks || []).map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.state)}</td><td>${t.wake ? 'wakes the laptop' : 'no wake'}</td><td>${t.next ? esc(fmtDate(t.next)) : '-'}</td><td>${t.last ? esc(fmtDate(t.last)) : '-'}</td></tr>`).join('');
+  const fails = (W.failures || []).map(f => `<tr><td>${esc(f.alias)}</td><td>${esc(fmtDate(f.t))}</td><td>${esc(f.error)}</td></tr>`).join('');
+  $('#watch').innerHTML = `<div class="sec">Watchdog</div>
+    <div class="kv"><span>Last run</span><b>${lr ? esc(fmtDate(lr.finished)) + ` (${lr.ok}/${lr.total} checks ok)` : 'never'}</b>
+    <span>Dashboard generated</span><b>${esc(fmtDate(W.generated))}</b>
+    <span>Log</span><span class="mono">${esc(W.log_path)}</span></div>
+    <div class="sec">Scheduled tasks</div>
+    <table class="w"><tr><th>Task</th><th>State</th><th>Wake</th><th>Next run</th><th>Last run</th></tr>${runs}</table>
+    <div class="sec">Recent check failures</div>` + (fails ? `<table class="w"><tr><th>Machine</th><th>When</th><th>Error</th></tr>${fails}</table>` : '<div class="meta">None.</div>');
+}
+
+function renderAll() {
+  charts.splice(0).forEach(c => c.destroy());
+  const root = $('#machines'); root.innerHTML = '';
+  const W = DATA.watchdog;
+  const nErr = DATA.machines.reduce((n, m) => n + m.problems.filter(p => p.severity === 'error').length, 0);
+  const nWarn = DATA.machines.reduce((n, m) => n + m.problems.filter(p => p.severity === 'warning').length, 0);
+  $('#sub').innerHTML = `Updated ${esc(fmtDate(W.generated))} &middot; ` + (nErr ? badge('err', nErr + ' error' + (nErr > 1 ? 's' : '')) + ' ' : '') + (nWarn ? badge('warn', nWarn + ' warning' + (nWarn > 1 ? 's' : '')) : '') + (nErr || nWarn ? '' : badge('ok', 'no problems'));
+  DATA.machines.forEach(M => { const c = renderCard(M); root.appendChild(c); wireTimeline(M, c); renderCharts(M); });
+  renderWatch();
+}
+function boot() { try { renderAll(); } catch (e) { document.body.insertAdjacentHTML('afterbegin', '<pre style="color:red;padding:12px">Dashboard error: ' + esc(e && e.stack || e) + '</pre>'); } }
+boot();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { try { renderAll(); } catch (e) {} });
+</script>
+</body>
+</html>
