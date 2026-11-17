@@ -79,3 +79,82 @@ def test_next_ladder():
     assert next_ladder(0.5) == [0.125, 0.25, 0.5]          # 2r is out of range: extend downwards
     assert next_ladder(1 / 32) == [1 / 32, 1 / 16, 1 / 8]  # r/2 is out of range: extend upwards
     assert all(1 / 32 - 1e-12 <= x <= 0.5 + 1e-12 for x in next_ladder(0.125))
+
+
+def test_bob_traj_head_is_bit_identical(tmp_path):
+    rp, kx, ky, final, q, X = setup(tmp_path)
+    Xa, Xb = signed_small(X, 0.02), signed_small(X, 0.03)
+    tha, sa, pa = bob_traj(rp, 1, Xa)
+    thb, sb, pb = bob_traj(rp, 1, Xb)
+    thh, sh, ph = bob_traj(rp, 1, Xb, head=(sa[1], pa[1]))
+    assert torch.equal(thb, thh) and all(torch.equal(pb[e], ph[e]) and torch.equal(sb[e], sh[e]) for e in pb)
+
+
+def test_second_radius():
+    from keysel.phi_recenter import second_radius
+    assert second_radius(0.25, 0.3) == 0.5 and second_radius(0.25, 0.1) == 0.125
+    assert second_radius(0.5, 0.3) is None                      # cap kept: no step above max(ladder)
+    assert second_radius(0.5, -1.0) == 0.25 and second_radius(1 / 32, 0.0) is None
+
+
+def _tiny_run(tmp_path, monkeypatch):
+    import keysel.data as kd
+    import keysel.run_phi as rp
+    from keysel.phi_dyn import run_e2
+    from tests.test_phi import _driver_args, fake_balanced
+    monkeypatch.setattr(rp, "load_cifar100", lambda device="cpu": fake_balanced())
+    monkeypatch.setattr(kd, "load_cifar100", lambda device="cpu": fake_balanced())
+    o = tmp_path / "o"
+    rp.main(_driver_args(o))
+    run_e2(o, 1, restarts=1, steps=2, device="cpu", log=lambda *_: None)
+    return o
+
+
+def test_cache_resume_is_bit_identical(tmp_path, monkeypatch):
+    """Two cached calls of 1 iteration, with a simulated kill inside the second iteration, give the same poisons and
+    the same history as one uncached call of 2 iterations; finished candidates are not recomputed after the kill."""
+    import json
+
+    import keysel.phi_recenter as R
+    o = _tiny_run(tmp_path, monkeypatch)
+    quiet = lambda *_: None  # noqa: E731
+    kw = dict(steps=3, restarts=1, device="cpu", log=quiet, ladder=(0.5, 0.25, 0.125), adaptive=True)
+    R.run_recenter(o, 1, iters=2, subdir="plain", **kw)
+    R.run_recenter(o, 1, iters=1, subdir="cached", cache=True, **kw)
+    real_bob, calls = R.bob_traj, {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 3:          # 1: start-of-call (cached, so not called), then candidates: kill at the 3rd replay
+            raise KeyboardInterrupt
+        return real_bob(*a, **k)
+    monkeypatch.setattr(R, "bob_traj", flaky)
+    try:
+        R.run_recenter(o, 1, iters=1, subdir="cached", cache=True, **kw)
+    except KeyboardInterrupt:
+        pass
+    assert len(list((o / "e2" / "k1" / "cached" / "state").glob("cand_*.pt"))) == 2
+    calls["n"] = -100
+    R.run_recenter(o, 1, iters=1, subdir="cached", cache=True, **kw)
+    assert calls["n"] == -99         # only the missing candidate was replayed
+    a = torch.load(o / "e2" / "k1" / "plain" / "poisons_current.pt", weights_only=False)["X_signed"]
+    b = torch.load(o / "e2" / "k1" / "cached" / "poisons_current.pt", weights_only=False)["X_signed"]
+    assert torch.equal(a, b)
+    ha = json.loads((o / "e2" / "k1" / "plain" / "history.json").read_text())
+    hb = json.loads((o / "e2" / "k1" / "cached" / "history.json").read_text())
+    key = lambda h: [(x["radius_over_eps"], x["ce"], x["pred_dJ"]) for x in h["accepted"]]  # noqa: E731
+    assert len(ha["accepted"]) == 2 and key(ha) == key(hb)
+
+
+def test_two_candidate_rule(tmp_path, monkeypatch):
+    import json
+
+    from keysel.phi_recenter import run_recenter
+    o = _tiny_run(tmp_path, monkeypatch)
+    run_recenter(o, 1, iters=2, steps=3, restarts=1, device="cpu", log=lambda *_: None, ladder=(0.5, 0.25, 0.125),
+                 adaptive=True, two_cand=True, subdir="two")
+    h = json.loads((o / "e2" / "k1" / "two" / "history.json").read_text())
+    assert h["attempts"][0]["radius_over_eps"] == 0.25
+    for it in {a["iteration"] for a in h["attempts"]}:
+        att = [a for a in h["attempts"] if a["iteration"] == it]
+        assert 1 <= len(att) <= 2 and all(a["radius_over_eps"] <= 0.5 for a in att)

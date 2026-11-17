@@ -39,18 +39,33 @@ def next_ladder(last, lo=1 / 32, hi=0.5):
     return c
 
 
-def bob_traj(rp, k0, Xs):
+def second_radius(first, rho, lo=1 / 32, hi=0.5, thr=0.25):
+    """Two-candidate rule: after the first radius (fraction of eps) gave real/predicted = rho, try 2*first if
+    rho >= thr (the model is still trustworthy: go bigger), else first/2; None if that leaves [lo, hi]."""
+    nxt = 2 * first if rho >= thr else first / 2
+    return nxt if lo - 1e-12 <= nxt <= hi + 1e-12 else None
+
+
+def bob_traj(rp, k0, Xs, head=None):
     """Replay Bob. Returns (theta_end, starts, pres): starts[e] = parameters at the start of epoch e, pres[e] = just
-    before the poison step of epoch e, for e in [k0, N-1]."""
+    before the poison step of epoch e, for e in [k0, N-1].
+
+    head = (starts[k0], pres[k0]) of any earlier replay from the same k0: the clean steps of epoch k0 do not depend on
+    the poisons, so they are skipped (bit-identical result)."""
     pd = rp.pidx.to(rp.device)
     y_p = rp.ytr[pd]
     Xs = Xs.to(rp.device, rp.dtype)
-    th = rp.start(k0 - 1)
+    th = rp.start(k0 - 1) if head is None else None
     starts, pres = {}, {}
     for e in range(k0, rp.epochs):
-        starts[e] = th
         plan = epoch_plan(len(rp.Xf), rp.pidx, e, rp.seed, rp.bs)
-        for j in range(len(plan)):
+        j0 = 0
+        if head is not None and e == k0:
+            starts[e], th = head
+            j0 = len(plan) - 1
+        else:
+            starts[e] = th
+        for j in range(j0, len(plan)):
             if j == len(plan) - 1:
                 pres[e] = th
                 x, y = Xs, y_p
@@ -103,14 +118,33 @@ def adjoint_bob(rp, k0, Xs, q_end, starts, log=None, offload=False):
     return P
 
 
+def _cpu(d):
+    return {k: v.cpu() for k, v in d.items()}
+
+
+def _dev(d, device):
+    return {k: v.to(device) for k, v in d.items()}
+
+
 def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 255, out_name="e2", device="cuda",
-                 log=print, ladder=(0.5, 0.25, 0.125, 0.0625), adaptive=False, stop_gain=0.0, init="B", subdir=None):
+                 log=print, ladder=(0.5, 0.25, 0.125, 0.0625), adaptive=False, stop_gain=0.0, init="B", subdir=None,
+                 cache=False, two_cand=False, rho_up=0.25):
+    """cache=True: keep the current trajectory, the adjoint and every finished candidate in <out>/state, so a new call
+    (or a call after a kill) resumes inside an iteration instead of recomputing them; also reuses the clean steps of
+    epoch k0 across replays. Bit-identical to cache=False except for the crafting seed, which then follows the global
+    iteration count (identical for an uninterrupted single call).
+    two_cand=True: per iteration, try the middle radius (the previously kept one with --adaptive, else the median of
+    the ladder) first, then 2r if real/predicted >= rho_up else r/2 (within [1/32, max(ladder)]), keep the better."""
     set_deterministic()
     run = Path(run)
     rp, P, cfg = replay_from_run(run, device)
-    subdir = subdir or {"gm": "recenter_gm", "gm8": "recenter_gm8", "bcos": "recenter_bcos", "bcos_global": "recenter_bcos_global"}.get(init, "recenter")
+    subdir = subdir or {"gm": "recenter_gm", "gm8": "recenter_gm8", "bcos": "recenter_bcos",
+                        "bcos_global": "recenter_bcos_global"}.get(init, "recenter")
     out = run / out_name / f"k{k0}" / subdir
     out.mkdir(parents=True, exist_ok=True)
+    st = out / "state"
+    if cache:
+        st.mkdir(exist_ok=True)
     kx, ky = P["keys"]
     kx, ky = kx.to(device, rp.dtype), ky.to(device)
     pd = rp.pidx.to(device)
@@ -137,36 +171,84 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
         X_cur = _load(run / out_name / f"k{k0}" / "poisons_B.pt")["X_signed"].to(device, rp.dtype)
     if radius is not None:  # single fixed radius (pixel units)
         ladder = (radius / eps,)
+
+    def valid(f):  # a state file belongs to the current poisons and the current global iteration
+        if not (cache and f.exists()):
+            return None
+        d = _load(f)
+        ok = torch.equal(d["X_cur"], X_cur.cpu()) and d.get("n_acc", len(hist["accepted"])) == len(hist["accepted"])
+        return d if ok else None
+
+    def clear_iteration_state():
+        for f in list(st.glob("adjoint.pt")) + list(st.glob("cand_*.pt")):
+            f.unlink()
+
     t0 = time.time()
-    thB, starts, pres = bob_traj(rp, k0, X_cur)
+    d = valid(st / "traj.pt")
+    if d is not None:
+        thB, starts, pres = d["thB"].to(device), _dev(d["starts"], device), _dev(d["pres"], device)
+        src = "cache"
+    else:
+        thB, starts, pres = bob_traj(rp, k0, X_cur)
+        src = "replay"
+        if cache:
+            torch.save({"X_cur": X_cur.cpu(), "thB": thB.cpu(), "starts": _cpu(starts), "pres": _cpu(pres)},
+                       st / "traj.pt")
+    head = (starts[k0], pres[k0]) if cache else None
     rep = keys_report(rp.model, thB, kx, ky)
     log(f"[recenter k0={k0}] current poisons: hits {rep['hit']} margins {[round(m, 2) for m in rep['margin']]} "
-        f"ce {rep['ce']:.3f} (alice {jA['ce']:.3f}) ({time.time() - t0:.0f}s)")
+        f"ce {rep['ce']:.3f} (alice {jA['ce']:.3f}) ({time.time() - t0:.0f}s, {src})")
     for it in range(1, iters + 1):
         t0 = time.time()
-        q_end = batch_grad(rp.model, thB, kx, ky)
-        Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log, offload=True)
-        log(f"[recenter] iteration {it}: adjoint along Bob ready ({time.time() - t0:.0f}s)")
-        cands = []
-        cur_ladder = ladder
-        if adaptive and hist["accepted"]:  # three radii around the previously kept one
-            cur_ladder = tuple(sorted(next_ladder(hist["accepted"][-1]["radius_over_eps"], hi=max(ladder)), reverse=True))
-        log(f"[recenter] iteration {it}: radii (x eps) {[round(f, 4) for f in cur_ladder]}")
-        for attempt, f in enumerate(cur_ladder):
+        n_acc = len(hist["accepted"])
+        seed_it = n_acc + 1 if cache else it
+        d = valid(st / "adjoint.pt")
+        if d is not None:
+            Pb = _dev(d["P"], device)
+            log(f"[recenter] iteration {it}: adjoint loaded from cache")
+        else:
+            q_end = batch_grad(rp.model, thB, kx, ky)
+            Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log, offload=True)
+            if cache:
+                torch.save({"X_cur": X_cur.cpu(), "n_acc": n_acc, "P": _cpu(Pb)}, st / "adjoint.pt")
+            log(f"[recenter] iteration {it}: adjoint along Bob ready ({time.time() - t0:.0f}s)")
+        hi = max(ladder)
+        if two_cand:
+            if adaptive and hist["accepted"]:
+                first = hist["accepted"][-1]["radius_over_eps"]
+            else:
+                srt = sorted(ladder, reverse=True)
+                first = srt[len(srt) // 2]
+            log(f"[recenter] iteration {it}: two-candidate rule, first radius {first:.4f} eps")
+        else:
+            cur_ladder = ladder
+            if adaptive and hist["accepted"]:  # three radii around the previously kept one
+                cur_ladder = tuple(sorted(next_ladder(hist["accepted"][-1]["radius_over_eps"], hi=hi), reverse=True))
+            log(f"[recenter] iteration {it}: radii (x eps) {[round(f, 4) for f in cur_ladder]}")
+
+        def evaluate(f, attempt):
+            cf = st / f"cand_{f:.6f}.pt"
+            c = valid(cf)
+            if c is not None:
+                log(f"[recenter] it {it} attempt {attempt} radius {f:.3f}eps: loaded from cache "
+                    f"(actual dJ {c['rec']['actual_dJ']:.3f}, ce {c['repN']['ce']:.3f})")
+                return (c["repN"]["ce"], c["rec"], c["X_new"].to(device, rp.dtype), c["thN"].to(device),
+                        _dev(c["startsN"], device), _dev(c["presN"], device), c["repN"])
             r = f * eps
             t1 = time.time()
             d0 = X_cur - X
             res = craft_B(rp, Pb, k0, X, y, groups, eps, steps, restarts, tau=r / 2,
-                          gen=torch.Generator().manual_seed(1000 * it + attempt), thetas=pres, delta0=d0, radius=r,
-                          log=log)
+                          gen=torch.Generator().manual_seed(1000 * seed_it + attempt), thetas=pres, delta0=d0,
+                          radius=r, log=log)
             X_new = (X + res["delta"]).clamp(0, 1)
             pred = sum(res["F_best"]) - sum(res["F_init"])
-            thN, startsN, presN = bob_traj(rp, k0, X_new)
+            thN, startsN, presN = bob_traj(rp, k0, X_new, head=head)
             repN = keys_report(rp.model, thN, kx, ky)
             actual = repN["ce"] - rep["ce"]
             dd = (X_new - X_cur).abs()
             an = reanchor_stats(rp, k0, X_new, pres, presN)
-            rec = {"iteration": it, "attempt": attempt, "radius": r, "radius_over_eps": f, "pred_dJ": pred,
+            rec = {"iteration": it, "global_iteration": n_acc + 1, "attempt": attempt, "radius": r,
+                   "radius_over_eps": f, "pred_dJ": pred,
                    "actual_dJ": actual, "anchor": an, "anchor_cos_mean": sum(a["cos"] for a in an) / len(an),
                    "anchor_norm_ratio_mean": sum(a["norm_ratio"] for a in an) / len(an),
                    "ce": repN["ce"], "hits": repN["hit"], "margin": repN["margin"],
@@ -175,16 +257,38 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
                 f"{actual:.3f}; hits {repN['hit']} margins {[round(m, 2) for m in repN['margin']]} ce {repN['ce']:.3f} "
                 f"(mean |change|/eps {rec['mean_change_over_eps']:.2f}) kick anchoring cos {rec['anchor_cos_mean']:.3f} "
                 f"norm ratio {rec['anchor_norm_ratio_mean']:.3f} ({time.time() - t1:.0f}s)")
-            cands.append((repN["ce"], rec, X_new, thN, startsN, presN, repN))
             hist["attempts"].append(rec)
             hist_f.write_text(json.dumps(hist, indent=1))
+            if cache:
+                torch.save({"X_cur": X_cur.cpu(), "n_acc": n_acc, "rec": rec, "X_new": X_new.cpu(), "thN": thN.cpu(),
+                            "startsN": _cpu(startsN), "presN": _cpu(presN), "repN": repN}, cf)
+            return (repN["ce"], rec, X_new, thN, startsN, presN, repN)
+
+        cands = []
+        if two_cand:
+            c1 = evaluate(first, 0)
+            cands.append(c1)
+            rho = c1[1]["actual_dJ"] / c1[1]["pred_dJ"] if c1[1]["pred_dJ"] < 0 else float("-inf")
+            nxt = second_radius(first, rho, hi=hi, thr=rho_up)
+            log(f"[recenter] iteration {it}: real/predicted {rho:.3f} -> second radius "
+                f"{'none' if nxt is None else f'{nxt:.4f} eps'}")
+            if nxt is not None:
+                cands.append(evaluate(nxt, 1))
+        else:
+            for attempt, f in enumerate(cur_ladder):
+                cands.append(evaluate(f, attempt))
         best = min(cands, key=lambda c: c[0])
         if best[0] < rep["ce"] - 1e-3:
             _, rec, X_cur, thB, starts, pres, rep = best
             torch.save({"X_signed": X_cur.cpu()}, cur_f)
             torch.save({"X_signed": X_cur.cpu()}, out / f"poisons_iter{len(hist['accepted']) + 1}.pt")  # global count
+            if cache:
+                torch.save({"X_cur": X_cur.cpu(), "thB": thB.cpu(), "starts": _cpu(starts), "pres": _cpu(pres)},
+                           st / "traj.pt")
             hist["accepted"].append(rec)
             hist_f.write_text(json.dumps(hist, indent=1))
+            if cache:
+                clear_iteration_state()
             log(f"[recenter] iteration {it} accepted radius {rec['radius_over_eps']:.3f}eps: ce {rep['ce']:.3f} "
                 f"hits {rep['hit']} margins {[round(m, 2) for m in rep['margin']]}")
             if stop_gain and -rec["actual_dJ"] < stop_gain:
@@ -196,6 +300,8 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             log("[recenter] no radius of the ladder improved the real J: stopping")
             hist["stopped"] = "no radius improved"
             hist_f.write_text(json.dumps(hist, indent=1))
+            if cache:
+                clear_iteration_state()
             break
     return hist
 
@@ -264,6 +370,11 @@ if __name__ == "__main__":
     ap.add_argument("--stop-gain", type=float, default=0.0, help="stop when the kept real gain in key CE is below this")
     ap.add_argument("--steps", type=int, default=120)
     ap.add_argument("--restarts", type=int, default=1)
+    ap.add_argument("--cache", action="store_true",
+                    help="keep trajectory / adjoint / finished candidates in <out>/state (resume inside an iteration)")
+    ap.add_argument("--two-cand", action="store_true",
+                    help="two candidates per iteration: middle radius, then 2r if real/predicted >= --rho-up else r/2")
+    ap.add_argument("--rho-up", type=float, default=0.25)
     ap.add_argument("--probe", action="store_true", help="stationarity probe at the current poisons (no iteration)")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -273,4 +384,5 @@ if __name__ == "__main__":
         raise SystemExit(0)
     run_recenter(a.run, a.k0, a.iters, a.radius, a.steps, a.restarts,
                  device=dev, log=lambda s: print(s, flush=True), ladder=tuple(float(x) for x in a.ladder.split(",")),
-                 adaptive=a.adaptive, stop_gain=a.stop_gain, init=a.init)
+                 adaptive=a.adaptive, stop_gain=a.stop_gain, init=a.init, cache=a.cache, two_cand=a.two_cand,
+                 rho_up=a.rho_up)
