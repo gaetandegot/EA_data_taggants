@@ -355,9 +355,33 @@ The Data Taggants paper uses 8 restarts for gradient matching; our baseline used
 - Scope matters at $k_0=32$ (global 2.98 vs group 3.89), consistent with the caveat that the adjoint is for the mean over keys, so the group scope aligns each key with the joint target; one $k_0$ only.
 - GM is the best of the anchored methods on SiLU at $k_0=32$ and $28$. Linear score of the B objective at $k_0=32$: B −61.2, GM −15.3, B-cos −12.5 (group) / −9.2 (global): B wins its own objective by far and loses on the real one.
 
+### Ladder from the 8-restart GM poisons (SiLU, `e2/k{k0}/recenter_gm8`)
+
+Start: GM poisons with 8 restarts (see above), same 3-radius adaptive ladder (ε/2, ε/4, ε/8 first, then {r/2, r, 2r}), 120 steps, 1 restart; the kept candidate is the lowest real key CE. Alice's key CE is 7.17. "Kick anchoring" is the mean cosine between the kicks at Bob's and at the previous trajectory's parameters.
+
+| $k_0$ | iteration | kept radius | predicted $\Delta J$ → real | real / predicted | key CE | hits (margins) | kick anchoring |
+|---|---|---|---|---|---|---|---|
+| 32 | start | | | | 2.376 | 2/4 (−3.75, 1.25, 1.61, −0.80) | |
+| | 1 | ε/4 | −1.76 → −0.86 | 0.49 | 1.513 | 3/4 | 0.89 |
+| | 2 | ε/2 | −2.31 → −0.59 | 0.26 | 0.925 | 4/4 (0.19, 1.73, 2.82, 0.07) | 0.85 |
+| | 3 | ε/8 | −0.85 → −0.36 | 0.43 | 0.560 | 4/4 | 0.97 |
+| | 4 | ε/8 | −0.29 → −0.09 | 0.30 | **0.474** | 4/4 (1.93, 2.87, 3.34, 0.64) | 0.96 |
+| 28 | start | | | | 1.522 | 3/4 (−2.77, 3.75, 2.90, 1.25) | |
+| | 1 | ε/2 | −4.83 → −0.97 | 0.20 | 0.557 | 4/4 | 0.73 |
+| | 2 | ε/4 | −2.49 → −0.30 | 0.12 | **0.254** | 4/4 (2.00, 4.58, 3.30, 1.73) | 0.79 |
+| 24 | start | | | | 1.111 | 3/4 (−1.57, 4.95, 3.87, 2.38) | |
+| | 1 | ε/4 | −2.37 → −0.89 | 0.37 | 0.225 | 4/4 | 0.89 |
+| | 2 | ε/2 | −1.46 → −0.15 | 0.10 | **0.079** | 4/4 (4.38, 5.40, 4.34, 3.02) | 0.76 |
+
+- **Four of four hits after 1–2 iterations at every start epoch**, from a GM start with 2/4 (k0=32) or 3/4 hits (k0=28, 24). Key CE after the iterations: 0.47, 0.25, 0.08 at k0=32, 28, 24: lower for earlier injection, as before.
+- At $k_0=32$ the earlier ladder from B's poisons reached 0.373 after 4 iterations (above); from GM it is 0.474, so the GM start is slightly behind after the same number of iterations. Different starting poisons and one seed, so I do not read this as a significant difference.
+- **Kept radii** are in 0.125–0.5 ε (ε/8 to ε/2) and not monotonic (k0=32: ε/4, ε/2, ε/8, ε/8). Real/predicted at the kept radius is 0.1–0.5, lower at the larger radii, as at the ladder radii of the B-start runs.
+- The stop rule (kept gain < 0.02) has not fired at any $k_0$. At $k_0=32$ the last real gain is −0.086 (still moving).
+- Not finished: k0=28 and 24 have two iterations each. The plan is two more for both (4 in total); the k0=32 ladder is at four, so it is not continued. A queued run was killed on 2026-11-17 at about 06:30 (the iteration in progress at k0=28 was lost).
+
 ### Pending (queued for the GPU window)
 
-- **Ladder from the 8-restart GM poisons** on SiLU at $k_0=32, 28, 24$ (`e2/k{k0}/recenter_gm8`, up to 8 iterations each, early stop when the kept gain is below 0.02; started 2026-11-17). First iteration at $k_0=32$ starts from key CE 2.376 (2/4 hits).
+- Two more ladder iterations from the 8-restart GM poisons at $k_0=28$ and $24$ (4 iterations each in total; $k_0=32$ stays at 4); queued for the 2026-11-17 evening window with `KS="28 24" ROUNDS=1`.
 - B-cos at $k_0=28$ with global scope and at $k_0=24$ (needs E2 there first): not run; low priority after the results above.
 
 ## 10. Not done yet
