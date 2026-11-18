@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Register one seed of the multi-seed phi experiment on THIS machine and start it (one seed per machine):
 #   bash scripts/phi_launch.sh <seed>|auto     auto: tarse 1, frontal 2, temporal 3
-#   bash scripts/phi_launch.sh chain <preset> [seed]   append a job (labelfree | select | hard) after the current ones
+#   bash scripts/phi_launch.sh chain <preset> [seed]   append a job (labelfree | select | hard | hard_deit) after the current ones
 #   bash scripts/phi_launch.sh --stop          unregister every job (phi_tick becomes a no-op) and stop the queue
 # Run folder: /Data/gaetan.degot/checkpoints/phi10_silu_s<seed> (local disk). After that, the laptop watchdog's
 # phi_tick relaunches the queue whenever it should be running; relaunching by hand is also just this command.
@@ -29,6 +29,7 @@ if [ "${1:-}" = chain ]; then  # chain <preset> [seed]: append a job run after t
   case $preset in
     labelfree|select) run=/Data/gaetan.degot/checkpoints/phi10_silu_s$seed ;;
     hard) run=/Data/gaetan.degot/checkpoints/phi20_e8_same_s$seed ;;
+    hard_deit) run=/Data/gaetan.degot/checkpoints/phi20_e8_same_deit_s$seed ;;
     *) echo "error: unknown preset $preset" >&2; exit 1 ;;
   esac
   grep -q "^$seed $run $preset\$" "$pointer" 2>/dev/null && { echo "already registered: $seed $run $preset"; exit 0; }
@@ -55,9 +56,13 @@ if crontab -l 2>/dev/null | grep -qF "# data-taggants-supervisor" || pgrep -u "$
   echo "         stop it with: bash scripts/launch_supervised.sh --uninstall   (then re-run this command)" >&2
   [ "${FORCE:-0}" = 1 ] || exit 1
 fi
-mkdir -p "$R/state"
-echo "$SEED $R" > "$pointer"
-echo "registered seed $SEED on $host -> $R"
+if [ -f "$pointer" ]; then  # already registered: never rewrite the job list (it may hold several chained jobs)
+  echo "already registered on $host: $(awk 'NF {printf "%s%s", sep, $0; sep=" | "}' "$pointer")"
+else
+  mkdir -p "$R/state"
+  echo "$SEED $R" > "$pointer"
+  echo "registered seed $SEED on $host -> $R"
+fi
 bash "$repo/scripts/phi_tick.sh" | /usr/bin/python3 -c "
 import json, sys
 s = json.loads(sys.stdin.read())
