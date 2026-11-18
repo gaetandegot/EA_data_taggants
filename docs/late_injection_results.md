@@ -16,6 +16,7 @@ Plan and theory: `docs/late_injection_statement_of_purpose.md`. Run folder: `/Da
 8. The ~20% gap between predicted and real gain at small steps is not a gradient bug (§7, §8). It comes from Bob's training dynamics, not from $J$, and the cause is that the real SGD map of this ReLU network is not smooth: over one epoch, any perturbation produces a response of roughly fixed size (about 2e-3 in parameter norm), on top of the linear one (§8).
 9. **With a smooth activation (SiLU) the gap closes at small steps and the ladder converges much faster** (§9): real/predicted is 0.93 at ε/32 and 0.98 at ε/128 (ReLU: 0.79 and 0.84), the one-epoch floor of the SGD map drops by at least 140×, and the ladder from B's poisons reaches **4 of 4 hits at iteration 2** (key CE 0.73) and CE 0.37 after 4 iterations at $k_0=32$ (ReLU: 2.58, 1 of 4). At the radii the ladder actually uses (ε/8 to ε/2) real/predicted is still only 0.2–0.6, so the model stays a direction finder, not a predictor.
 10. On SiLU the anchored B is **not** better than GM (CE 2.77 / 1 hit vs 2.34 / 2 hits at $k_0=32$), the reverse of ReLU. The cause is untested; B-cos (§9) is the test, with results pending.
+11. **On SiLU, the re-centered ladder started from the 8-restart GM poisons converges to 4 of 4 hits at every start epoch**, with key CE 0.47 / 0.11 / 0.023 at $k_0=32$ / 28 / 24 after 4 iterations (§9). At $k_0=28$ and 24 the gains have stopped (< 0.03 per iteration) and only small radii (ε/16–ε/8) still help.
 
 ## 1. Where does the clean dynamics stop amplifying?
 
@@ -368,23 +369,44 @@ Start: GM poisons with 8 restarts (see above), same 3-radius adaptive ladder (ε
 | | 4 | ε/8 | −0.29 → −0.09 | 0.30 | **0.474** | 4/4 (1.93, 2.87, 3.34, 0.64) | 0.96 |
 | 28 | start | | | | 1.522 | 3/4 (−2.77, 3.75, 2.90, 1.25) | |
 | | 1 | ε/2 | −4.83 → −0.97 | 0.20 | 0.557 | 4/4 | 0.73 |
-| | 2 | ε/4 | −2.49 → −0.30 | 0.12 | **0.254** | 4/4 (2.00, 4.58, 3.30, 1.73) | 0.79 |
+| | 2 | ε/4 | −2.49 → −0.30 | 0.12 | 0.254 | 4/4 (2.00, 4.58, 3.30, 1.73) | 0.79 |
+| | 3 | ε/8 | −0.43 → −0.12 | 0.28 | 0.131 | 4/4 | 0.93 |
+| | 4 | ε/16 | −0.077 → −0.025 | 0.32 | **0.106** | 4/4 (3.81, 5.04, 4.15, 2.43) | 0.98 |
 | 24 | start | | | | 1.111 | 3/4 (−1.57, 4.95, 3.87, 2.38) | |
 | | 1 | ε/4 | −2.37 → −0.89 | 0.37 | 0.225 | 4/4 | 0.89 |
-| | 2 | ε/2 | −1.46 → −0.15 | 0.10 | **0.079** | 4/4 (4.38, 5.40, 4.34, 3.02) | 0.76 |
+| | 2 | ε/2 | −1.46 → −0.15 | 0.10 | 0.079 | 4/4 (4.38, 5.40, 4.34, 3.02) | 0.76 |
+| | 3 | ε/4 | −0.39 → −0.040 | 0.10 | 0.039 | 4/4 | 0.86 |
+| | 4 | ε/8 | −0.072 → −0.016 | 0.22 | **0.023** | 4/4 (5.69, 6.53, 5.69, 4.45) | 0.92 |
 
-- **Four of four hits after 1–2 iterations at every start epoch**, from a GM start with 2/4 (k0=32) or 3/4 hits (k0=28, 24). Key CE after the iterations: 0.47, 0.25, 0.08 at k0=32, 28, 24: lower for earlier injection, as before.
+- **Four of four hits after 1–2 iterations at every start epoch**, from a GM start with 2/4 (k0=32) or 3/4 hits (k0=28, 24). Final key CE after 4 iterations: **0.47, 0.11, 0.023** at k0=32, 28, 24: lower for earlier injection, as before. All four keys keep a margin ≥ 2.4 at k0=28 and ≥ 4.4 at k0=24.
+- **The ladder has converged at k0=28 and 24** (iterations 3–4, run on 2026-11-17 evening). The real gains shrink to −0.025 (k0=28) and −0.016 (k0=24); the stop rule (gain < 0.02) fired at k0=24. In all four of these iterations the largest radius of the ladder made the key CE **worse** (real ΔJ +0.47, +0.02, +0.08, +0.11 at the top radius), and the kept radius shrank to ε/16–ε/8. Near the optimum the linear model is reliable only at small steps; further iterations would bring little.
 - At $k_0=32$ the earlier ladder from B's poisons reached 0.373 after 4 iterations (above); from GM it is 0.474, so the GM start is slightly behind after the same number of iterations. Different starting poisons and one seed, so I do not read this as a significant difference.
 - **Kept radii** are in 0.125–0.5 ε (ε/8 to ε/2) and not monotonic (k0=32: ε/4, ε/2, ε/8, ε/8). Real/predicted at the kept radius is 0.1–0.5, lower at the larger radii, as at the ladder radii of the B-start runs.
-- The stop rule (kept gain < 0.02) has not fired at any $k_0$. At $k_0=32$ the last real gain is −0.086 (still moving).
-- Not finished: k0=28 and 24 have two iterations each. The plan is two more for both (4 in total); the k0=32 ladder is at four, so it is not continued. A queued run was killed on 2026-11-17 at about 06:30 (the iteration in progress at k0=28 was lost).
+- At $k_0=32$ the last real gain is −0.086 (still moving); that ladder stays at four iterations.
+- Iterations 3–4 at k0=28 / 24 resumed from the iteration-2 poisons (an earlier attempt was killed on 2026-11-17 at about 06:30).
 
-### Pending (queued for the GPU window)
+### Pending
 
-- Two more ladder iterations from the 8-restart GM poisons at $k_0=28$ and $24$ (4 iterations each in total; $k_0=32$ stays at 4); queued for the 2026-11-17 evening window with `KS="28 24" ROUNDS=1`.
 - B-cos at $k_0=28$ with global scope and at $k_0=24$ (needs E2 there first): not run; low priority after the results above.
 
-## 10. Not done yet
+## 10. Compute: compiled second-order primitives (closed)
+
+The two hot operations are the HVP (adjoint pass, 98 per epoch) and the crafting gradient $\partial_\delta(-P^\top g^\delta)$ (signed-Adam steps of B). Both were eager double backward. Benchmark on the run's GPU (20 GB), resnet18_gn_silu, `scripts/bench/` (`BENCH_BS=256`; at batch 512 the uncompiled forward-over-reverse HVP runs out of memory), output in `phi_r18gn_silu_s0/bench_gpu_bs256/`:
+
+| operation | eager double backward | compiled forward-over-reverse (`torch.compile(jvp(grad))`) |
+|---|---|---|
+| SGD step, batch 256 (reference) | 118 ms | |
+| HVP, batch 256 | 596 ms, +5.8 GB | **450 ms, +4.1 GB** (1.32×) |
+| crafting gradient, chunk 50 | 132 ms, +1.3 GB | **69 ms, +0.8 GB** (1.9×) |
+| crafting gradient, chunk 100 | 210 ms, +2.3 GB | **150 ms, +1.5 GB** (1.4×) |
+| crafting gradient, chunk 400 | 875 ms, +8.9 GB | **530 ms, +5.7 GB** (1.65×) |
+
+- The compiled results differ from eager by ~7e-6 relative; the sign of the crafting gradient (all that signed Adam uses) agrees on > 99.999% of pixels. With a warm inductor cache they are bitwise identical across processes (two fresh processes gave the same checksums); a cold compile once gave a different HVP checksum.
+- Rejected: uncompiled forward-over-reverse (same speed as double backward, 2× the memory); TF32 (1.3× on crafting, 0.06% of signs flipped, breaks determinism). Copying the per-step θ to the CPU costs 0.64 s per epoch, so `offload` is free.
+- **Now the default** (`keysel/fastgrad.py`, hooked into `phi_lin.hvp` and `phi_dyn.grad_delta`) on CUDA; `KEYSEL_COMPILE=0` restores the eager code, e.g. to reproduce earlier runs bit for bit. Through the real code paths (3 trajectories × HVP + crafting chunks): 1.42× faster, peak 6.1 → 4.6 GB, 3 compiled graphs in total (no recompilation per θ).
+- Expected effect on a ladder iteration: −25% on the adjoint's HVPs and −30 to −40% on crafting (~105 s per attempt). Replaying Bob and evaluating each attempt (~380–480 s) is plain SGD and does not benefit, so a full iteration gets ~15–25% faster. About 30% of the HVP's GPU time is small elementwise kernels (GroupNorm second derivatives); nothing else stands out in the profile, so this chapter is closed.
+
+## 11. Not done yet
 
 - Transfer test: Bob with another seed and data order on the ladder poisons (postponed).
 - Larger trust radii (above ε/2) when starting far from the optimum.
