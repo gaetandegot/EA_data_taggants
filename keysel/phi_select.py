@@ -49,6 +49,59 @@ def score_images(rp, P, k0, eps, chunk=100, log=print):
     return (G.abs() * step).flatten(1).sum(1)
 
 
+def per_sample_grad_norms(model, theta, X, y, chunk=32):
+    """||grad_theta loss_i|| for every image (vmap over per-sample gradients), at `theta`."""
+    from torch.func import functional_call, grad, vmap
+    from .phi import set_flat
+    set_flat(model, theta)
+    model.train()
+    params = {n: p.detach() for n, p in model.named_parameters()}
+    bufs = dict(model.named_buffers())
+
+    def loss1(p, x, t):
+        return torch.nn.functional.cross_entropy(functional_call(model, (p, bufs), (x[None],)), t[None])
+    g1 = vmap(grad(loss1), in_dims=(None, 0, 0))
+    out = torch.empty(len(X))
+    for c in range(0, len(X), chunk):
+        g = g1(params, X[c:c + chunk], y[c:c + chunk])
+        out[c:c + chunk] = torch.sqrt(sum((t.flatten(1) ** 2).sum(1) for t in g.values())).cpu()
+    return out
+
+
+def directional_losses(model, theta, P_flat, X, y, chunk=250):
+    """d_i = P^T grad_theta loss_i for every image (one forward-mode pass per chunk)."""
+    from torch.func import functional_call, jvp
+    names = [n for n, _ in model.named_parameters()]
+    params = dict(zip(names, split_like(model, theta)))
+    tang = dict(zip(names, split_like(model, P_flat)))
+    bufs = dict(model.named_buffers())
+    model.train()
+    out = torch.empty(len(X))
+    for c in range(0, len(X), chunk):
+        xb, yb = X[c:c + chunk], y[c:c + chunk]
+        f = lambda p: torch.nn.functional.cross_entropy(functional_call(model, (p, bufs), (xb,)), yb, reduction="none")  # noqa: E731
+        out[c:c + chunk] = jvp(f, (params,), (tang,))[1].detach().cpu()
+    return out
+
+
+def normalized_scores(rp, P, k0, score, norm_epoch, log=print):
+    """aligned_i = sum_e w_e (-P_e^T g_i(theta_e)) / (||P_e|| ||g_i||),  w_e = gamma_e / sum gamma;
+    gainnorm_i = score_i / ||g_i||   (||g_i|| at theta_{norm_epoch}, before its poison step)."""
+    epochs = list(range(k0, rp.epochs))
+    gam = torch.tensor([poison_lr(rp, e) for e in epochs], dtype=torch.float64)
+    w = (gam / gam.sum()).tolist()
+    t0 = time.time()
+    gn = per_sample_grad_norms(rp.model, rp.pre(norm_epoch), rp.Xf, rp.ytr).clamp_min(1e-12)
+    log(f"  [select] per-sample gradient norms at epoch {norm_epoch} ({time.time() - t0:.0f}s)")
+    al = torch.zeros(len(rp.Xf), dtype=torch.float64)
+    for we, e in zip(w, epochs):
+        t0 = time.time()
+        d = directional_losses(rp.model, rp.pre(e), P[e], rp.Xf, rp.ytr)
+        al += we * (-d.double()) / (float(P[e].norm()) * gn.double())
+        log(f"  [select] alignment epoch {e} ({time.time() - t0:.0f}s)")
+    return al.float(), score / gn, gn
+
+
 def main(a):
     set_deterministic()
     run = Path(a.run)
@@ -98,6 +151,28 @@ def main(a):
         save()
         log("[select] " + " | ".join(f"{k}: score sum {v.get('sum', float('nan')):.4g}, target-class labels "
                                      f"{v['target_label_frac']:.0%}" for k, v in res["scores"].items()))
+    if a.extra:  # gradient-norm normalised selections (the magnitude score favours large-gradient images)
+        f = out / "scores_normalized.pt"
+        if f.exists():
+            d = _load(f)
+        else:
+            al, gnorm, gn = normalized_scores(rp, P, a.k0, score, a.norm_epoch, log=log)
+            d = {"aligned": al, "gainnorm": gnorm, "grad_norm": gn}
+            torch.save(d, f)
+        for k in ("aligned", "gainnorm"):
+            sets[k] = torch.argsort(d[k], descending=True)[:B]
+            if k not in res.get("scores", {}):
+                v = sets[k]
+                res["scores"][k] = {"sum": float(score[v].sum()), "mean": float(score[v].mean()),
+                                    "target_label_frac": float(sum(int(ytr[i]) in targets for i in v.tolist()) / len(v)),
+                                    "own_score_mean": float(d[k][v].mean()), "own_score_all_mean": float(d[k].mean()),
+                                    "grad_norm_mean": float(d["grad_norm"][v].mean()),
+                                    "grad_norm_all_mean": float(d["grad_norm"].mean())}
+                res.setdefault("labels", {})[k] = {int(c): int((ytr[v] == c).sum()) for c in torch.unique(ytr[v])}
+                save()
+                sc = res["scores"][k]
+                log(f"[select] {k}: target-class labels {sc['target_label_frac']:.0%}, magnitude score sum {sc['sum']:.4g}, "
+                    f"mean grad norm {sc['grad_norm_mean']:.3g} (all {sc['grad_norm_all_mean']:.3g})")
     th0 = rp.start(a.k0 - 1)
     for name, idx in sets.items():
         if name in res.get("bob", {}):
@@ -127,5 +202,7 @@ if __name__ == "__main__":
     ap.add_argument("--k0", type=int, default=32)
     ap.add_argument("--steps", type=int, default=240)
     ap.add_argument("--restarts", type=int, default=2)
+    ap.add_argument("--extra", action="store_true", help="also the gradient-norm normalised selections (aligned, gainnorm)")
+    ap.add_argument("--norm-epoch", type=int, default=36, help="epoch whose parameters give the per-sample gradient norms")
     ap.add_argument("--data", default=None, help="(tests) torch file holding (Xtr, ytr, Xte, yte)")
     main(ap.parse_args())

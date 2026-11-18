@@ -3,7 +3,8 @@
 #   alice -> gm (2 restarts) -> ablation (label-free runs only: same-label GM, 3 arms of Bob at every k0)
 #   -> re-centred ladder from GM at k0 = 32 28 24, in rounds of 2 iterations (all k0 progress), 4 iterations each.
 #   SET = config overrides of keysel/run_phi_seed.py at creation, e.g. "n_keys=20 per_key=25 eps=8 pick=target".
-# JOB=select: adjoint-based image selection on a finished label-free run (keysel/phi_select.py, k0=32).
+# JOB=select: adjoint-based image selection on a finished label-free run (keysel/phi_select.py, k0=32);
+# JOB=select2: the same plus the gradient-norm normalised selections (phi_select --extra).
 # Only runs inside the GPU window: each command is hard-killed MARGIN_MIN before the window ends and the queue then
 # waits for the next window. Exits non-zero on a crash (state/failures is incremented; the phi tick relaunches).
 # When the job is finished, starts the next job registered for this machine (scripts/phi_tick.sh).
@@ -79,12 +80,13 @@ next_job() {  # the job is finished: start the next job registered for this mach
   ( exec bash scripts/phi_tick.sh ) > /dev/null 2>&1 < /dev/null &
 }
 
-if [ "$JOB" = select ]; then
-  while [ ! -f "$R/state/select.done" ]; do
-    run select "$R/select.log" "$PY" -m keysel.phi_select --run "$R" --k0 32 && touch "$R/state/select.done"
+if [ "$JOB" = select ] || [ "$JOB" = select2 ]; then  # select2: + gradient-norm normalised selections (--extra)
+  extra=""; [ "$JOB" = select2 ] && extra="--extra"
+  while [ ! -f "$R/state/$JOB.done" ]; do
+    run "$JOB" "$R/$JOB.log" "$PY" -m keysel.phi_select --run "$R" --k0 32 $extra && touch "$R/state/$JOB.done"
   done
   echo done > "$R/state/current"
-  ev "select done"
+  ev "$JOB done"
   next_job
   exit 0
 fi

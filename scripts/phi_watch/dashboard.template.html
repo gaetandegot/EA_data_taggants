@@ -202,20 +202,26 @@ function ablationTable(runs) {
 }
 
 function selectTable(runs) {
-  const sets = ["any", "same", "selected"];
+  const sets = ["any", "same", "selected", "aligned", "gainnorm"].filter(n => n === "any" || n === "same" || n === "selected"
+    || runs.some(r => r.select && ((r.select.scores && r.select.scores[n]) || (r.select.bob && r.select.bob[n]))));
   const rows = sets.map(n => `<tr><td>${n}</td>${runs.map(r => {
     const sc = r.select && r.select.scores && r.select.scores[n], b = r.select && r.select.bob && r.select.bob[n];
     return `<td class="num">${sc ? Number(sc.sum).toExponential(2) : "-"}</td><td class="num">${sc ? Math.round(100 * sc.target_label_frac) + "%" : "-"}</td><td class="num">${b ? `${f3(b.ce)} (${b.hits})` : "-"}</td>`;
   }).join("")}</tr>`).join("");
   return `<div class="tablewrap"><table><tr><th>image set</th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: score sum</th><th class="num">target-class labels</th><th class="num">B &rarr; real Bob CE (hits)</th>`).join("")}</tr>${rows}</table></div>
-    <p class="small">Score: best first-order decrease of the linearised key loss within the eps ball, per image (adjoint along Alice, k0 = 32). "selected" = top images by score. The same optimiser (problem B) is run on each set; real Bob with that set as the last batch.</p>`;
+    <p class="small">Score: best first-order decrease of the linearised key loss within the eps ball, per image (adjoint along Alice, k0 = 32). "selected" = top images by that score; "aligned" = top by the cosine between the image's clean gradient and the adjoint direction; "gainnorm" = top by score / gradient norm. The same optimiser (problem B) is run on each set; real Bob with that set as the last batch.</p>`;
 }
 
 function seedsTable(machines) {
   const all = summaries(machines);
   if (!all.length) return "";
   let html = "";
-  const lf = all.filter(r => r.preset === "labelfree"), hard = all.filter(r => r.preset === "hard"), sel = all.filter(r => r.preset === "select");
+  const lf = all.filter(r => r.preset === "labelfree"), hard = all.filter(r => r.preset === "hard");
+  // one selection column per run: the select2 summary (a superset, written later) wins over select
+  const selBy = {};
+  all.filter(r => r.preset === "select" || r.preset === "select2").forEach(r => {
+    const k = r.run_dir || r.seed; if (!selBy[k] || r.preset === "select2") selBy[k] = r; });
+  const sel = Object.values(selBy);
   if (lf.length) html += `<h2>Label-free (10 keys x 50, eps 16): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(lf)}
     <h2>Label-free: same-label ablation, real Bob after GM, key CE (hits)</h2>${ablationTable(lf)}`;
   if (sel.length) html += `<h2>Adjoint image selection (label-free run, k0 = 32)</h2>${selectTable(sel)}`;

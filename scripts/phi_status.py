@@ -124,19 +124,30 @@ def imagenet_cron():
 
 
 PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label, 20 keys x 25, eps 8",
-           "select": "adjoint image selection (k0=32)", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
+           "select": "adjoint image selection (k0=32)",
+           "select2": "normalised image selection (k0=32)", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
-def select_stages(r):
-    """Progress of keysel.phi_select on run r (k0=32)."""
+def select_stages(r, job="select"):
+    """Progress of keysel.phi_select on run r (k0=32); job select2 = with the normalised selections."""
     o = r / "select_k32"
     res = jload(o / "results.json") or {}
-    n_ep = count(r / "select.log", r"\[select\] scored epoch ")
-    nb = len(res.get("bob", {}))
+    log = r / f"{job}.log"
+    if job == "select2":
+        nb = sum(1 for k in ("aligned", "gainnorm") if k in res.get("bob", {}))
+        n_al = count(log, r"\[select\] alignment epoch ")
+        nf = (o / "scores_normalized.pt").exists()
+        done = (r / "state" / "select2.done").exists()
+        stages = [{"name": "select2", "done": done, "count": int(nf) + nb, "total": 3,
+                   "text": f"normalised scores {'done' if nf else f'{n_al}/8 epochs'}, B + real Bob {nb}/2 sets",
+                   "updated": iso(mtime(log))}]
+        return stages, 0 if done else 35 * (1 - (int(nf) + nb) / 3)
+    n_ep = count(log, r"\[select\] scored epoch ")
+    nb = sum(1 for k in ("any", "same", "selected") if k in res.get("bob", {}))
     adj, sc = (o / "adjoint.pt").exists(), (o / "scores.pt").exists()
     stages = [{"name": "select", "done": bool(res.get("done")), "count": int(adj) + int(sc) + nb, "total": 5,
                "text": f"adjoint {'done' if adj else 'pending'}, scores {'done' if sc else f'{n_ep}/8 epochs'}, "
-                       f"B + real Bob {nb}/3 sets", "updated": iso(mtime(r / "select.log"))}]
+                       f"B + real Bob {nb}/3 sets", "updated": iso(mtime(log))}]
     remaining = 0 if res.get("done") else 50 * (1 - (int(adj) + int(sc) + nb) / 5)
     return stages, remaining
 
@@ -214,7 +225,7 @@ def summary(seed, r, preset, done):
     """Results of one job of the chain (for the cross-seed tables of the dashboard)."""
     out = {"seed": seed, "run_dir": str(r), "run_name": r.name, "preset": preset, "label": PRESETS.get(preset, preset),
            "done": done}
-    if preset == "select":
+    if preset in ("select", "select2"):
         res = jload(r / "select_k32" / "results.json") or {}
         out["select"] = {"scores": res.get("scores"), "bob": {k: {"ce": v["ce"], "hits": sum(v["hits"])}
                                                              for k, v in res.get("bob", {}).items()}}
@@ -229,10 +240,10 @@ def summary(seed, r, preset, done):
 
 def status(r, relaunched, preset="labelfree"):
     st = r / "state"
-    if preset == "select":
-        stages, remaining = select_stages(r)
+    if preset in ("select", "select2"):
+        stages, remaining = select_stages(r, preset)
         ab, cfg = {}, jload(r / "config.json") or {}
-        all_done = (st / "select.done").exists()
+        all_done = (st / f"{preset}.done").exists()
     else:
         stages, remaining, ab, cfg = run_stages(r)
         all_done = (st / "all.done").exists()
@@ -279,7 +290,7 @@ def main():
             if len(f) >= 2:
                 preset = f[2] if len(f) > 2 else "labelfree"
                 r = Path(f[1])
-                done = (r / "state" / ("select.done" if preset == "select" else "all.done")).exists()
+                done = (r / "state" / (f"{preset}.done" if preset in ("select", "select2") else "all.done")).exists()
                 jobs.append((int(f[0]), r, preset, done))
         active = next((j for j in jobs if not j[3]), jobs[-1])
         s = status(active[1], relaunched, active[2])

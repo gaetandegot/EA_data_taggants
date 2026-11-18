@@ -158,12 +158,21 @@ def test_config_overrides_and_select(tmp_path):
     for stage in ("alice", "gm", "ablation"):
         run_phi_seed.main(argparse.Namespace(out=str(out), seed=4, stage=stage, data=str(data_f)))
     from keysel import phi_select
-    phi_select.main(argparse.Namespace(run=str(out), k0=2, steps=2, restarts=1, data=str(data_f)))
+    phi_select.main(argparse.Namespace(run=str(out), k0=2, steps=2, restarts=1, data=str(data_f), extra=False,
+                                       norm_epoch=2))
     res = json.loads((out / "select_k2" / "results.json").read_text())
     assert res["done"] and set(res["bob"]) == {"any", "same", "selected"}
     assert res["scores"]["selected"]["sum"] >= max(res["scores"]["any"]["sum"], res["scores"]["same"]["sum"])
     score = torch.load(out / "select_k2" / "scores.pt", weights_only=False)
     assert score.shape == (len(fake_data()[1]),) and (score >= 0).all()
+    # second pass with the normalised selections: adds two sets, keeps the finished ones
+    phi_select.main(argparse.Namespace(run=str(out), k0=2, steps=2, restarts=1, data=str(data_f), extra=True,
+                                       norm_epoch=2))
+    res2 = json.loads((out / "select_k2" / "results.json").read_text())
+    assert set(res2["bob"]) == {"any", "same", "selected", "aligned", "gainnorm"}
+    assert res2["bob"]["any"] == res["bob"]["any"]  # not recomputed
+    d = torch.load(out / "select_k2" / "scores_normalized.pt", weights_only=False)
+    assert (d["aligned"].abs() <= 1 + 1e-5).all()  # a weighted mean of cosines
 
 
 def test_chunked_hvp_equals_full_batch():

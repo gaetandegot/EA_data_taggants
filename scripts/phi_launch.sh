@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Register one seed of the multi-seed phi experiment on THIS machine and start it (one seed per machine):
 #   bash scripts/phi_launch.sh <seed>|auto     auto: tarse 1, frontal 2, temporal 3
-#   bash scripts/phi_launch.sh chain <preset> [seed]   append a job (labelfree | select | hard | hard_deit) after the current ones
+#   bash scripts/phi_launch.sh chain <preset> [seed]   append a job (labelfree | select | select2 | hard | hard_deit) after the current ones
 #   bash scripts/phi_launch.sh --stop          unregister every job (phi_tick becomes a no-op) and stop the queue
 # Run folder: /Data/gaetan.degot/checkpoints/phi10_silu_s<seed> (local disk). After that, the laptop watchdog's
 # phi_tick relaunches the queue whenever it should be running; relaunching by hand is also just this command.
@@ -27,7 +27,7 @@ if [ "${1:-}" = chain ]; then  # chain <preset> [seed]: append a job run after t
   seed=${3:-$( [ -f "$pointer" ] && awk 'NF {print $1; exit}' "$pointer")}
   [ -n "$seed" ] || { echo "error: no seed given and none registered on $host" >&2; exit 1; }
   case $preset in
-    labelfree|select) run=/Data/gaetan.degot/checkpoints/phi10_silu_s$seed ;;
+    labelfree|select|select2) run=/Data/gaetan.degot/checkpoints/phi10_silu_s$seed ;;
     hard) run=/Data/gaetan.degot/checkpoints/phi20_e8_same_s$seed ;;
     hard_deit) run=/Data/gaetan.degot/checkpoints/phi20_e8_same_deit_s$seed ;;
     *) echo "error: unknown preset $preset" >&2; exit 1 ;;
