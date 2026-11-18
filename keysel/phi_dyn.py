@@ -20,6 +20,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from . import fastgrad
 from .phi import _load, batch_grad, epoch_plan, kick_at, set_deterministic, set_flat
 from .phi_metrics import cos
 from .phi_transport import replay_from_run
@@ -71,7 +72,10 @@ def pdot_g(model, theta, parts, x, y, create_graph):
 
 
 def grad_delta(model, theta, parts, x_base, y, d):
-    """d/d delta of  - P^T g^delta  (sum over the images of x_base)."""
+    """d/d delta of  - P^T g^delta  (sum over the images of x_base). Compiled forward-over-reverse on CUDA by default
+    (keysel.fastgrad); eager double backward with KEYSEL_COMPILE=0 or on CPU."""
+    if fastgrad.enabled(theta):
+        return fastgrad.grad_delta_compiled(model, theta, parts, x_base, y, d)
     d = d.detach().clone().requires_grad_(True)
     dot = pdot_g(model, theta, parts, x_base + d, y, True)
     (g,) = torch.autograd.grad(-dot, d)

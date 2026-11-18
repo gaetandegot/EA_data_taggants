@@ -13,13 +13,17 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from . import fastgrad
 from .models import build_cifar_model
 from .phi import (_load, batch_grad, epoch_plan, flat, kick_at, lr_at, set_deterministic, set_flat)
 from .phi_metrics import cos, load_final, load_pre
 
 
 def hvp(model, theta, x, y, v):
-    """H v for the mean cross-entropy of batch (x, y) at `theta` (double backward, no weight decay)."""
+    """H v for the mean cross-entropy of batch (x, y) at `theta` (no weight decay). Compiled forward-over-reverse
+    on CUDA by default (keysel.fastgrad); eager double backward with KEYSEL_COMPILE=0 or on CPU."""
+    if fastgrad.enabled(theta):
+        return fastgrad.hvp_compiled(model, theta, x, y, v)
     set_flat(model, theta)
     model.train()
     params = list(model.parameters())
