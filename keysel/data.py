@@ -45,3 +45,27 @@ def signing_subset(ytr, cls, n, seed):
     idx = (ytr.cpu() == cls).nonzero().flatten()
     g = torch.Generator().manual_seed(seed * 100003 + int(cls))
     return idx[torch.randperm(len(idx), generator=g)[:n]]
+
+
+def poison_subsets(ytr, ky, n, seed, pick="any"):
+    """Disjoint training indices for each key, n per key (list of tensors, one per key; deterministic in seed).
+
+    pick='any':    uniformly random images of ANY class (no link between a poison's label and its key's target).
+    pick='target': random images of the key's target class (the Data Taggants clean-label rule); keys that share a
+                   target class get disjoint images (signing_subset order, already-used images skipped).
+    """
+    ytr = ytr.cpu()
+    if pick == "any":
+        g = torch.Generator().manual_seed(seed * 100003 + 77777)
+        perm = torch.randperm(len(ytr), generator=g)
+        return [perm[k * n:(k + 1) * n] for k in range(len(ky))]
+    if pick != "target":
+        raise ValueError(f"unknown pick {pick!r}")
+    used, out = set(), []
+    for c in ky.tolist():
+        cand = signing_subset(ytr, int(c), len(ytr), seed)
+        idx = torch.tensor([i for i in cand.tolist() if i not in used][:n])
+        assert len(idx) == n, f"class {c} has fewer than {n} unused images"
+        used.update(idx.tolist())
+        out.append(idx)
+    return out

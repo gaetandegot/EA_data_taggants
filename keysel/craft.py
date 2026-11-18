@@ -37,8 +37,11 @@ def _slice_aug(aug, sl):
     return None if aug is None else tuple(a[sl] for a in aug)
 
 
-def _label(y, n, device):
-    return torch.full((n,), y, device=device)
+def _label(y, n, device, i=0):
+    """Labels of images i..i+n: y is one class (int) or a per-image label tensor (poisons of any class)."""
+    if torch.is_tensor(y) and y.ndim == 1:
+        return y[i:i + n].to(device)
+    return torch.full((n,), int(y), device=device)
 
 
 def match_and_grad(model, params, mask, g_key, x_base, delta, y, aug, chunk=64, mode="direct"):
@@ -56,7 +59,7 @@ def match_and_grad(model, params, mask, g_key, x_base, delta, y, aug, chunk=64, 
         total = None
         for i in range(0, n, chunk):
             xb = xs[i:i + chunk]
-            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device), reduction="sum")
+            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device, i), reduction="sum")
             g = torch.autograd.grad(loss, params, create_graph=True)
             total = list(g) if total is None else [t + gi for t, gi in zip(total, g)]
         full, head = split_cos(g_key, total, mask)
@@ -69,7 +72,7 @@ def match_and_grad(model, params, mask, g_key, x_base, delta, y, aug, chunk=64, 
         acc = [torch.zeros_like(p) for p in params]
         for i in range(0, n, chunk):
             xb = apply_aug((x_base[i:i + chunk] + delta[i:i + chunk]).detach(), _slice_aug(aug, slice(i, i + chunk)))
-            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device), reduction="sum")
+            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device, i), reduction="sum")
             for a, g in zip(acc, torch.autograd.grad(loss, params)):
                 a += g
         G = [a.requires_grad_(True) for a in acc]
@@ -80,7 +83,7 @@ def match_and_grad(model, params, mask, g_key, x_base, delta, y, aug, chunk=64, 
             sl = slice(i, i + chunk)
             d = delta[sl].detach().requires_grad_(True)
             xb = apply_aug(x_base[sl] + d, _slice_aug(aug, sl))
-            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device), reduction="sum")
+            loss = F.cross_entropy(model(xb), _label(y, len(xb), xb.device, i), reduction="sum")
             g = torch.autograd.grad(loss, params, create_graph=True)
             inner = sum((gi * vi).sum() for gi, vi in zip(g, v))
             out[sl] = torch.autograd.grad(inner, d)[0]
@@ -95,8 +98,10 @@ def score_of(model, params, mask, g_key, x_signed, y, chunk=64):
 
 
 def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0.1,
-              augment=True, R=1, gen=None, chunk=64, mode="direct", init_std=None):
+              augment=True, R=1, gen=None, chunk=64, mode="direct", init_std=None, y_poison=None):
     """Craft delta for signing images X (N,C,H,W in [0,1]) of class key_y.
+
+    y_poison: per-image true labels of X when the signing images are not all of class key_y (default: key_y).
 
     Returns dict with best delta (by unaugmented full cosine at the end of each restart),
     best 'full'/'head' scores, and per-restart lists.
@@ -105,6 +110,7 @@ def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0
     params = model_params(model)
     mask = head_mask(model, params)
     g_key = key_grad(model, key_x, key_y, params)
+    yp = key_y if y_poison is None else y_poison
     dev = X.device
     init_std = init_std if init_std is not None else eps ** 0.5
     miles = sorted({max(1, int(steps // m)) for m in (6.25, 2.667, 1.6, 1.142)})
@@ -119,7 +125,7 @@ def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0
             grad = torch.zeros_like(delta)
             for _r in range(R):
                 aug = sample_aug(len(X), X.shape[-1], gen, device=dev) if augment else None
-                _, _, gr = match_and_grad(model, params, mask, g_key, X, delta.detach(), key_y, aug, chunk, mode)
+                _, _, gr = match_and_grad(model, params, mask, g_key, X, delta.detach(), yp, aug, chunk, mode)
                 grad += gr / R
             delta.grad = grad.sign()
             opt.step()
@@ -128,7 +134,7 @@ def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0
                 delta.clamp_(-eps, eps)
                 delta.copy_(torch.max(torch.min(delta, 1 - X), -X))
         d = delta.detach().clone()
-        f, h = score_of(model, params, mask, g_key, X + d, key_y, chunk)
+        f, h = score_of(model, params, mask, g_key, X + d, yp, chunk)
         runs.append({"delta": d, "full": f, "head": h})
     best = max(runs, key=lambda r: r["full"])
     return {"delta": best["delta"], "full": best["full"], "head": best["head"],

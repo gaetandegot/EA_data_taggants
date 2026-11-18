@@ -41,7 +41,8 @@ def sum_grad(model, X, y, chunk=64, params=None):
     acc = [torch.zeros_like(p) for p in params]
     for i in range(0, len(X), chunk):
         xb = X[i:i + chunk]
-        loss = F.cross_entropy(model(xb), torch.full((len(xb),), y, device=xb.device), reduction="sum")
+        yb = y[i:i + chunk].to(xb.device) if torch.is_tensor(y) and y.ndim == 1 else torch.full((len(xb),), y, device=xb.device)
+        loss = F.cross_entropy(model(xb), yb, reduction="sum")
         for a, g in zip(acc, torch.autograd.grad(loss, params)):
             a += g
     return acc
