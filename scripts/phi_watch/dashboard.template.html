@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="120">
+<title>Robustness runs</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1d2433; --muted: #667085; --line: #e4e7ec;
+  --ok: #12805c; --okbg: #e3f5ec; --warn: #b54708; --warnbg: #fef0c7; --err: #b42318; --errbg: #fee4e2;
+  --info: #175cd3; --infobg: #e0eaff; --idle: #475467; --idlebg: #eef0f3; --bar: #2e90fa; --bardone: #12805c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1217; --card: #171b22; --ink: #e6e9ef; --muted: #98a2b3; --line: #2a303a;
+    --ok: #47cd89; --okbg: #0f2e22; --warn: #fdb022; --warnbg: #33270b; --err: #f97066; --errbg: #3a1512;
+    --info: #84adff; --infobg: #142045; --idle: #98a2b3; --idlebg: #222831; --bar: #53b1fd; --bardone: #47cd89;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 40px; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 28px 0 10px; }
+.sub { color: var(--muted); font-size: 13px; }
+.alerts { margin: 16px 0 4px; display: grid; gap: 6px; }
+.alert { padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.alert.error { background: var(--errbg); color: var(--err); }
+.alert.warning { background: var(--warnbg); color: var(--warn); }
+.alert.info { background: var(--infobg); color: var(--info); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-top: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.title { font-weight: 650; font-size: 16px; }
+.badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.b-ok { background: var(--okbg); color: var(--ok); } .b-warn { background: var(--warnbg); color: var(--warn); }
+.b-err { background: var(--errbg); color: var(--err); } .b-info { background: var(--infobg); color: var(--info); }
+.b-idle { background: var(--idlebg); color: var(--idle); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 10px 0; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.live { font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--idlebg); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; color: var(--muted); }
+.stage { display: grid; grid-template-columns: 92px 1fr; gap: 2px 10px; align-items: center; margin: 7px 0; font-size: 13px; }
+.stage .name { color: var(--muted); }
+.stage .name.cur { color: var(--ink); font-weight: 650; }
+.track { height: 7px; background: var(--idlebg); border-radius: 4px; overflow: hidden; }
+.fill { height: 100%; background: var(--bar); }
+.fill.done { background: var(--bardone); }
+.stage .txt { grid-column: 2; font-size: 12px; color: var(--muted); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; overflow-x: auto; }
+.path { font-variant-numeric: tabular-nums; }
+.dots { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 2px; background: var(--idlebg); }
+.dot.ok { background: var(--ok); } .dot.fail { background: var(--err); } .dot.re { background: var(--warn); } .dot.wait { background: var(--muted); opacity: .45; }
+.events { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.events li { padding: 1px 0; overflow-wrap: anywhere; }
+.small { font-size: 12px; color: var(--muted); }
+.hit-all { color: var(--ok); font-weight: 650; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main id="app">Loading...</main>
+<script>
+const DATA = /*__DATA__*/null;
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function ago(iso, now) {
+  if (!iso) return "never";
+  const s = Math.max(0, (now - new Date(iso)) / 1000);
+  if (s < 90) return Math.round(s) + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return (s / 3600).toFixed(1) + " h ago";
+  return Math.round(s / 86400) + " d ago";
+}
+function hm(sec) { if (sec == null) return "?"; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h ? `${h} h ${m} min` : `${m} min`; }
+function clock(iso) { return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?"; }
+function f3(x) { return x == null ? "?" : Number(x).toFixed(3); }
+
+// state of one machine from its latest record and recent history
+function machineState(hist, now) {
+  const last = hist.length ? hist[hist.length - 1] : null;
+  const st = last && last.ok ? last.status : null;
+  const lastOk = [...hist].reverse().find(r => r.ok && r.status);
+  const probs = [];
+  let badge = ["NO DATA", "b-idle"];
+  if (!last) return { last, st, lastOk, probs: [{ sev: "warning", msg: "no check yet" }], badge };
+  if (!last.ok) {
+    let n = 0; for (let i = hist.length - 1; i >= 0 && !hist[i].ok; i--) n++;
+    probs.push({ sev: n >= 3 ? "error" : "warning", msg: `check failed (${n} in a row): ${last.error}` });
+    badge = ["UNREACHABLE", "b-err"];
+    return { last, st: lastOk ? lastOk.status : null, stale: true, lastOk, probs, badge };
+  }
+  if (!st.active) { probs.push({ sev: "warning", msg: "no phi run registered on this machine (run PhiWatch.ps1 -Setup)" }); return { last, st, lastOk, probs, badge: ["NOT REGISTERED", "b-warn"] }; }
+  const h = st.health || {}, w = h.gpu_window || {};
+  if (st.all_done) badge = ["DONE", "b-info"];
+  else if (h.pipeline_running && st.current_stage === "idle") badge = ["WAITING FOR WINDOW", "b-idle"];
+  else if (h.pipeline_running) badge = [st.relaunched ? "RELAUNCHED" : "RUNNING", st.relaunched ? "b-warn" : "b-ok"];
+  else if (w.state !== "open") badge = ["WINDOW CLOSED", "b-idle"];
+  else badge = ["NOT RUNNING", "b-err"];
+  if (h.gave_up) probs.push({ sev: "error", msg: `gave up after ${h.failures} consecutive failures: delete state/failures on ${st.host} after fixing` });
+  else if (h.failures > 0) probs.push({ sev: "warning", msg: `${h.failures} consecutive failure(s), last: see state/events.log` });
+  if (h.imagenet_cron) probs.push({ sev: "warning", msg: "the ImageNet supervisor cron is installed here and competes for the GPU (launch_supervised.sh --uninstall)" });
+  if (!st.all_done && !h.pipeline_running && w.state === "open") {
+    if (w.seconds != null && w.seconds < 1800) probs.push({ sev: "info", msg: "not running: less than 30 min left in the window" });
+    else if (h.gpu_mem_used_mb >= 2000) probs.push({ sev: "warning", msg: `not running: GPU busy (${h.gpu_mem_used_mb} MiB used by someone else)` });
+    else if (!h.gave_up) probs.push({ sev: "error", msg: "not running although the window is open and the GPU is free" });
+  }
+  const recent = hist.slice(-6).filter(r => r.ok && r.status && r.status.relaunched).length;
+  if (recent >= 3) probs.push({ sev: "error", msg: `relaunched ${recent} times in the last 6 checks: the queue keeps dying (see queue.log)` });
+  const cur = st.cur || {};
+  if (h.pipeline_running && st.current_stage !== "idle" && cur.updated && (now - new Date(cur.updated)) > 90 * 60e3)
+    probs.push({ sev: "warning", msg: `no progress in ${st.current_stage} for ${ago(cur.updated, now).replace(" ago", "")}` });
+  return { last, st, lastOk, probs, badge };
+}
+
+function stageRows(st) {
+  return (st.stages || []).map(s => {
+    const frac = s.total ? Math.min(1, s.count / s.total) : 0;
+    const cur = s.name === st.current_stage;
+    let txt = esc(s.text);
+    if (s.ce != null) txt += ` &middot; key CE ${f3(s.ce)} &middot; hits <span class="${s.hits === s.n_keys ? "hit-all" : ""}">${s.hits}/${s.n_keys}</span> &middot; min margin ${Number(s.min_margin).toFixed(2)}`;
+    else if (s.start_ce != null) txt += ` &middot; GM start: key CE ${f3(s.start_ce)}, hits ${s.start_hits}/10`;
+    return `<div class="stage"><div class="name ${cur ? "cur" : ""}">${esc(s.name.replace("ladder_", "ladder "))}</div>
+      <div class="track"><div class="fill ${s.done ? "done" : ""}" style="width:${(s.done ? 100 : frac * 100).toFixed(1)}%"></div></div>
+      <div class="txt">${txt}</div></div>`;
+  }).join("");
+}
+
+function card(alias, hist, now) {
+  const m = machineState(hist, now);
+  const st = m.st;
+  const dots = hist.slice(-48).map(r => {
+    const c = !r.ok ? "fail" : r.status && r.status.relaunched ? "re" : r.status && r.status.health && r.status.health.pipeline_running && r.status.current_stage !== "idle" ? "ok" : "wait";
+    return `<span class="dot ${c}" title="${esc(clock(r.t) + " " + (r.ok ? (r.status.current_stage || "") : r.error))}"></span>`;
+  }).join("");
+  let body = `<div class="small">no data</div>`;
+  if (st && st.active) {
+    const h = st.health || {}, w = h.gpu_window || {};
+    const winTxt = w.state === "open" ? `open until ${clock(w.until)} (${hm(w.seconds)} left)` : w.state === "closed" ? `closed, opens ${clock(w.until)}` : esc(w.state);
+    body = `${m.stale ? `<div class="alert warning">showing the last successful check (${ago(m.lastOk.t, now)})</div>` : ""}
+      <dl class="kv">
+        <dt>stage</dt><dd>${esc(st.current_stage || "?")}${st.all_done ? " (all done)" : ""}</dd>
+        <dt>GPU</dt><dd>${h.gpu_mem_used_mb ?? "?"} MiB, ${h.gpu_util ?? "?"}% &middot; window ${winTxt}</dd>
+        <dt>remaining</dt><dd>${st.all_done ? "-" : "~" + hm(st.remaining_gpu_seconds) + " of GPU time (rough)"}</dd>
+        <dt>run</dt><dd class="small">${esc(st.run_dir)}</dd>
+      </dl>
+      <div class="live">${esc((st.cur && st.cur.live) || "")}</div>
+      ${stageRows(st)}
+      <details><summary>recent events</summary><ul class="events">${(st.events || []).slice(-10).reverse().map(e => `<li>${esc(clock(e.at))} ${esc(e.msg)}</li>`).join("")}</ul></details>`;
+  }
+  return `<div class="card"><div class="head"><div class="title">${st && st.seed != null ? "seed " + esc(st.seed) + " &middot; " : ""}${esc(st ? st.host : alias)} <span class="small">(${esc(alias)})</span></div>
+    <span class="badge ${m.badge[1]}">${m.badge[0]}</span></div>
+    <div class="small">last check ${ago(m.last && m.last.t, now)}${st && st.preset_label ? " &middot; " + esc(st.preset_label) : ""}</div>
+    ${st && st.chain ? `<div class="small">jobs: ${st.chain.map((c, i) => `<span style="${i === st.chain_active ? "font-weight:650;color:var(--ink)" : ""}">${esc(c.preset)} s${esc(c.seed)}${c.done ? " &#10003;" : ""}</span>`).join(" &rarr; ")}</div>` : ""}
+    ${m.probs.map(p => `<div class="alert ${p.sev}" style="margin-top:8px">${esc(p.msg)}</div>`).join("")}
+    ${body}
+    <div class="dots" title="last 48 checks: green running, grey waiting, orange relaunched, red failed">${dots}</div></div>`;
+}
+
+function summaries(machines) {
+  // one summary per job of every machine (status.chain), or the active run for older status lines
+  const out = [];
+  for (const m of machines) {
+    const st = m.st;
+    if (!st || !st.active) continue;
+    if (st.chain) { st.chain.forEach(c => out.push({ ...c, host: st.host })); continue; }
+    out.push({ seed: st.seed, host: st.host, preset: st.preset || "labelfree", label: st.preset_label || "label-free",
+      ladders: (st.stages || []).filter(x => x.name.startsWith("ladder_k")), ablation: st.ablation });
+  }
+  return out.sort((a, b) => (a.seed ?? 99) - (b.seed ?? 99));
+}
+
+function ladderTable(runs) {
+  const k0s = [...new Set(runs.flatMap(r => (r.ladders || []).map(s => +s.name.slice(8))))].sort((a, b) => b - a);
+  const rows = k0s.map(k => `<tr><td>k0 = ${k}</td>${runs.map(r => {
+    const s = (r.ladders || []).find(x => x.name === "ladder_k" + k);
+    if (!s || !s.ce_iters) return `<td class="small">${s ? esc(s.text) : "-"}</td>`;
+    const nk = s.n_keys ?? r.n_keys ?? 10;
+    const hits = s.hits != null ? `hits <span class="${s.hits === nk ? "hit-all" : ""}">${s.hits}/${nk}</span>`
+      : s.start_hits != null ? `GM start: hits ${s.start_hits}/${nk}` : "";
+    return `<td><span class="path">${s.ce_iters.map(f3).join(" &rarr; ")}</span><br><span class="small">${hits}${hits ? " &middot; " : ""}${esc(s.text)}</span></td>`;
+  }).join("")}</tr>`).join("");
+  return `<div class="tablewrap"><table><tr><th></th>${runs.map(r => `<th>seed ${esc(r.seed)} (${esc(r.host)})</th>`).join("")}</tr>${rows}</table></div>`;
+}
+
+function ablationTable(runs) {
+  const k0s = [...new Set(runs.flatMap(r => Object.keys(r.ablation || {}).map(Number)))].sort((a, b) => b - a);
+  if (!k0s.length) return `<p class="small">no ablation result yet</p>`;
+  const c = x => x ? `${f3(x.ce)} (${x.hits})` : "-";
+  const rows = k0s.map(k => `<tr><td>k0 = ${k}</td>${runs.map(r => {
+    const a = r.ablation && r.ablation[String(k)];
+    if (!a) return `<td class="num small">-</td><td class="num small">-</td><td class="num small">-</td>`;
+    return `<td class="num">${c(a.gm_any)}</td><td class="num">${c(a.gm_same_last)}</td><td class="num">${c(a.gm_same)}</td>`;
+  }).join("")}</tr>`).join("");
+  return `<div class="tablewrap"><table><tr><th></th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: any, last</th><th class="num">same, last</th><th class="num">same, spread</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">GM poisons of any class vs of the key's target class (same), placed in the last batch of each epoch or at their own positions in Alice's data order (spread). Label effect: "any, last" vs "same, last"; position effect: "same, last" vs "same, spread". All from Alice's state at the start of epoch k0; Alice's key CE is the no-poison reference.</p>`;
+}
+
+function selectTable(runs) {
+  const sets = ["any", "same", "selected"];
+  const rows = sets.map(n => `<tr><td>${n}</td>${runs.map(r => {
+    const sc = r.select && r.select.scores && r.select.scores[n], b = r.select && r.select.bob && r.select.bob[n];
+    return `<td class="num">${sc ? Number(sc.sum).toExponential(2) : "-"}</td><td class="num">${sc ? Math.round(100 * sc.target_label_frac) + "%" : "-"}</td><td class="num">${b ? `${f3(b.ce)} (${b.hits})` : "-"}</td>`;
+  }).join("")}</tr>`).join("");
+  return `<div class="tablewrap"><table><tr><th>image set</th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: score sum</th><th class="num">target-class labels</th><th class="num">B &rarr; real Bob CE (hits)</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">Score: best first-order decrease of the linearised key loss within the eps ball, per image (adjoint along Alice, k0 = 32). "selected" = top images by score. The same optimiser (problem B) is run on each set; real Bob with that set as the last batch.</p>`;
+}
+
+function seedsTable(machines) {
+  const all = summaries(machines);
+  if (!all.length) return "";
+  let html = "";
+  const lf = all.filter(r => r.preset === "labelfree"), hard = all.filter(r => r.preset === "hard"), sel = all.filter(r => r.preset === "select");
+  if (lf.length) html += `<h2>Label-free (10 keys x 50, eps 16): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(lf)}
+    <h2>Label-free: same-label ablation, real Bob after GM, key CE (hits)</h2>${ablationTable(lf)}`;
+  if (sel.length) html += `<h2>Adjoint image selection (label-free run, k0 = 32)</h2>${selectTable(sel)}`;
+  if (hard.length) html += `<h2>Hard same-label (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(hard)}`;
+  return html;
+}
+
+function render(D, nowMs) {
+  const now = nowMs != null ? nowMs : Date.now();
+  if (!D) return "<p>No data yet: run PhiWatch.ps1.</p>";
+  const machines = D.aliases.map(a => ({ alias: a, hist: D.history[a] || [], ...machineState(D.history[a] || [], now) }));
+  const alerts = machines.flatMap(m => m.probs.filter(p => p.sev !== "info").map(p => ({ sev: p.sev, msg: `${m.st ? m.st.host : m.alias}: ${p.msg}` })));
+  const next = (D.tasks || []).map(t => t.next).filter(Boolean).sort()[0];
+  return `<h1>Late-window experiments: label-free, selection, hard same-label</h1>
+    <div class="sub">dashboard written ${ago(D.generated, now)} (${new Date(D.generated).toLocaleString()}) &middot; next scheduled check ${next ? new Date(next).toLocaleString() : "none (tasks not installed?)"} &middot; this page reloads every 2 min</div>
+    <div class="alerts">${alerts.length ? alerts.map(a => `<div class="alert ${a.sev}">${esc(a.msg)}</div>`).join("") : `<div class="alert info">no problem detected</div>`}</div>
+    <div class="grid">${machines.map(m => card(m.alias, m.hist, now)).join("")}</div>
+    ${seedsTable(machines)}`;
+}
+
+if (typeof document !== "undefined") document.getElementById("app").innerHTML = render(DATA);
+if (typeof module !== "undefined") module.exports = { render, machineState };
+</script>
+</body>
+</html>
