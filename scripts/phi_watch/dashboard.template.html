@@ -219,7 +219,9 @@ function seedsTable(machines) {
   if (lf.length) html += `<h2>Label-free (10 keys x 50, eps 16): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(lf)}
     <h2>Label-free: same-label ablation, real Bob after GM, key CE (hits)</h2>${ablationTable(lf)}`;
   if (sel.length) html += `<h2>Adjoint image selection (label-free run, k0 = 32)</h2>${selectTable(sel)}`;
-  if (hard.length) html += `<h2>Hard same-label (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(hard)}`;
+  if (hard.length) html += `<h2>Hard same-label, ResNet18-GN-SiLU (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(hard)}`;
+  const deit = all.filter(r => r.preset === "hard_deit");
+  if (deit.length) html += `<h2>Hard same-label, DeiT-tiny (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(deit)}`;
   return html;
 }
 
@@ -229,7 +231,7 @@ function render(D, nowMs) {
   const machines = D.aliases.map(a => ({ alias: a, hist: D.history[a] || [], ...machineState(D.history[a] || [], now) }));
   const alerts = machines.flatMap(m => m.probs.filter(p => p.sev !== "info").map(p => ({ sev: p.sev, msg: `${m.st ? m.st.host : m.alias}: ${p.msg}` })));
   const next = (D.tasks || []).map(t => t.next).filter(Boolean).sort()[0];
-  return `<h1>Late-window experiments: label-free, selection, hard same-label</h1>
+  return `<h1>Late-window experiments: label-free, selection, hard same-label (ResNet, DeiT)</h1>
     <div class="sub">dashboard written ${ago(D.generated, now)} (${new Date(D.generated).toLocaleString()}) &middot; next scheduled check ${next ? new Date(next).toLocaleString() : "none (tasks not installed?)"} &middot; this page reloads every 2 min</div>
     <div class="alerts">${alerts.length ? alerts.map(a => `<div class="alert ${a.sev}">${esc(a.msg)}</div>`).join("") : `<div class="alert info">no problem detected</div>`}</div>
     <div class="grid">${machines.map(m => card(m.alias, m.hist, now)).join("")}</div>

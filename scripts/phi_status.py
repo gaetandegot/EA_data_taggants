@@ -123,7 +123,7 @@ def imagenet_cron():
 
 
 PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label, 20 keys x 25, eps 8",
-           "select": "adjoint image selection (k0=32)"}
+           "select": "adjoint image selection (k0=32)", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
 def select_stages(r):

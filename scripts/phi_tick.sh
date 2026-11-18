@@ -2,7 +2,7 @@
 # Called over SSH by the laptop monitor (scripts/phi_watch/PhiWatch.ps1):
 #   ssh <machine> bash ~/EA/EA_data_taggants/scripts/phi_tick.sh
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
-#   <seed> <run folder> [preset]     preset: labelfree (default) | select | hard
+#   <seed> <run folder> [preset]     preset: labelfree (default) | select | hard | hard_deit
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
 # >= 30 min left, GPU free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
 # preset's settings; then prints the state as ONE JSON line (scripts/phi_status.py --chain).
@@ -37,6 +37,7 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
     case $PRESET in
       labelfree) job=seed set="" ;;
       hard) job=seed set="n_keys=20 per_key=25 eps=8 pick=target" ;;
+      hard_deit) job=seed set="n_keys=20 per_key=25 eps=8 pick=target arch=deit_tiny_cifar" ;;
       select) job=select set="" ;;
       *) echo "error: unknown preset $PRESET in $pointer" >&2; exit 1 ;;
     esac

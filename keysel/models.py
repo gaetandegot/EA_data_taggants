@@ -174,8 +174,18 @@ def build_cifar_model(name, num_classes=100):
         "resnet20": lambda: CifarResNetN(3, num_classes),
         "resnet56": lambda: CifarResNetN(9, num_classes),
         "vgg11": lambda: CifarVGG11(num_classes),
+        "deit_tiny_cifar": lambda: deit_tiny_cifar(num_classes),
     }
     return Wrapped(nets[name](), CIFAR100_MEAN, CIFAR100_STD)
+
+
+def deit_tiny_cifar(num_classes=100):
+    """DeiT-tiny for 32x32 inputs: patch 4 (64 tokens + class token), 192 dims, 12 blocks, 3 heads, GELU, LayerNorm,
+    no dropout / drop-path (deterministic replay). Non-fused attention: the fused kernel has no double backward."""
+    from timm.models.vision_transformer import VisionTransformer
+    net = VisionTransformer(img_size=32, patch_size=4, num_classes=num_classes, embed_dim=192, depth=12, num_heads=3,
+                            mlp_ratio=4.0, qkv_bias=True, drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0.0)
+    return disable_fused_attn(net)
 
 
 def build_timm_model(name, pretrained=True):
