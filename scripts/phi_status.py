@@ -96,11 +96,12 @@ def window():
 
 def gpu_mem():
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu,memory.free",
+                              "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=20).stdout.split("\n")[0].split(",")
-        return int(out[0]), int(out[1])
+        return int(out[0]), int(out[1]), int(out[2])
     except Exception:  # noqa: BLE001
-        return None, None
+        return None, None, None
 
 
 def queue_running(r):
@@ -239,7 +240,7 @@ def status(r, relaunched, preset="labelfree"):
     running = queue_running(r)
     cur = next((s for s in stages if s["name"] == current), None)
     log = r / (f"{current}.log" if current and current not in ("idle", "done") else "queue.log")
-    mem, util = gpu_mem()
+    mem, util, free = gpu_mem()
     fails = int(read(st / "failures", "0") or 0)
     events = []
     for line in tail(st / "events.log", 30):
@@ -253,7 +254,7 @@ def status(r, relaunched, preset="labelfree"):
         "seed": seed_of(r, cfg),
         "all_done": all_done, "current_stage": current or None,
         "remaining_gpu_seconds": int(remaining * 60),
-        "health": {"gpu_window": window(), "gpu_mem_used_mb": mem, "gpu_util": util, "pipeline_running": running,
+        "health": {"gpu_window": window(), "gpu_mem_used_mb": mem, "gpu_util": util, "gpu_mem_free_mb": free, "pipeline_running": running,
                    "failures": fails, "max_failures": MAX_FAILURES, "gave_up": fails >= MAX_FAILURES,
                    "cron_installed": False, "imagenet_cron": imagenet_cron()},
         "stages": stages,

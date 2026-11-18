@@ -4,7 +4,7 @@
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
 #   <seed> <run folder> [preset]     preset: labelfree (default) | select | hard | hard_deit
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
-# >= 30 min left, GPU free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
+# >= 30 min left, GPU unused or >= 10 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
 # preset's settings; then prints the state as ONE JSON line (scripts/phi_status.py --chain).
 # This relaunches the queue after the nightly 00:33 cleanup: the user has taken responsibility for that (see
 # CLAUDE.md, "Nightly cleanup"). `bash scripts/phi_launch.sh --stop` unregisters every job of this machine.
@@ -32,8 +32,10 @@ pid=$(cat "$R/state/queue.pid" 2>/dev/null) && tr "\\0" " " 2>/dev/null < "/proc
 if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
   read -r wstate _ wleft <<< "$(/usr/bin/python3 "$repo/scripts/gpu_window.py" status)"
   fails=$(cat "$R/state/failures" 2>/dev/null || echo 0)
-  mem=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-  if [ "$wstate" = open ] && [ "$wleft" -ge 1800 ] && [ "$fails" -lt 8 ] && [ "${mem:-99999}" -lt 2000 ]; then
+  read -r mem free <<< "$(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
+  # GPU usable: (almost) unused, or shared with another job but >= 10 GB free (chunked HVP peak fits)
+  gpu_ok=0; { [ "${mem:-99999}" -lt 2000 ] || [ "${free:-0}" -ge 10240 ]; } && gpu_ok=1
+  if [ "$wstate" = open ] && [ "$wleft" -ge 1800 ] && [ "$fails" -lt 8 ] && [ $gpu_ok = 1 ]; then
     case $PRESET in
       labelfree) job=seed set="" ;;
       hard) job=seed set="n_keys=20 per_key=25 eps=8 pick=target" ;;

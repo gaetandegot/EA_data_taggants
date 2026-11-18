@@ -107,7 +107,7 @@ function machineState(hist, now) {
   if (h.imagenet_cron) probs.push({ sev: "warning", msg: "the ImageNet supervisor cron is installed here and competes for the GPU (launch_supervised.sh --uninstall)" });
   if (!st.all_done && !h.pipeline_running && w.state === "open") {
     if (w.seconds != null && w.seconds < 1800) probs.push({ sev: "info", msg: "not running: less than 30 min left in the window" });
-    else if (h.gpu_mem_used_mb >= 2000) probs.push({ sev: "warning", msg: `not running: GPU busy (${h.gpu_mem_used_mb} MiB used by someone else)` });
+    else if (h.gpu_mem_used_mb >= 2000 && !(h.gpu_mem_free_mb >= 10240)) probs.push({ sev: "warning", msg: `not running: GPU busy (${h.gpu_mem_used_mb} MiB used by someone else, ${h.gpu_mem_free_mb ?? "?"} MiB free; starts when >= 10 GB is free)` });
     else if (!h.gave_up) probs.push({ sev: "error", msg: "not running although the window is open and the GPU is free" });
   }
   const recent = hist.slice(-6).filter(r => r.ok && r.status && r.status.relaunched).length;
