@@ -23,7 +23,8 @@ def T(f, n=5):
     sync(); return (time.perf_counter() - t) / n, r
 def cat(d): return torch.cat([t.reshape(-1) for t in d.values()])
 rel = lambda a, b: float((a - b).norm() / b.norm())
-x = torch.rand(512, 3, 32, 32, device=dev); y = torch.randint(0, 100, (512,), device=dev)
+BS = int(__import__("os").environ.get("BENCH_BS", 512)); print(f"HVP batch {BS}")
+x = torch.rand(BS, 3, 32, 32, device=dev); y = torch.randint(0, 100, (BS,), device=dev)
 def L(p, xx, yy): return F.cross_entropy(functional_call(m, (p, bufs), (xx,)), yy)
 def sgd_grad():
     set_flat(m, th); m.zero_grad(set_to_none=True); F.cross_entropy(m(x), y).backward()

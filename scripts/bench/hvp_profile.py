@@ -13,7 +13,7 @@ m = build_cifar_model("resnet18_gn_silu").to(dev); th = flat(m); v = torch.randn
 names = [n for n, _ in m.named_parameters()]
 opt = torch.optim.SGD(m.parameters(), lr=0.01, weight_decay=5e-4)
 def data(B): return torch.rand(B, 3, 32, 32, device=dev), torch.randint(0, 100, (B,), device=dev)
-x, y = data(512)
+BS = int(__import__("os").environ.get("BENCH_BS", 512)); x, y = data(BS)
 def sgd():
     set_flat(m, th); l = F.cross_entropy(m(x), y); opt.zero_grad(set_to_none=True); l.backward(); opt.step(); return flat(m).clone()
 def hvp_fwd():
@@ -24,7 +24,7 @@ def T(fn, n=5):
     fn(); torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); t = time.time()
     for _ in range(n): fn()
     torch.cuda.synchronize(); return (time.time() - t) / n, torch.cuda.max_memory_allocated() / 2**30
-for name, fn in [("sgd512", sgd), ("hvp512 rev-rev", lambda: hvp(m, th, x, y, v)), ("hvp512 fwd-rev", hvp_fwd)]:
+for name, fn in [(f"sgd{BS}", sgd), (f"hvp{BS} rev-rev", lambda: hvp(m, th, x, y, v)), (f"hvp{BS} fwd-rev", hvp_fwd)]:
     t, mem = T(fn); print(f"{name:18s} {t*1e3:8.1f} ms  peak {mem:.2f} GB")
 parts = split_like(m, v)
 for B in (100, 200, 400):
