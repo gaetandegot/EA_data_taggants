@@ -7,6 +7,7 @@ training is replayed step by step with exactly the same operations as keysel.phi
 against R0's final parameters); dg_k is non-zero only at the poison step of each epoch.
 """
 import csv
+import os
 import json
 from pathlib import Path
 
@@ -19,9 +20,24 @@ from .phi import (_load, batch_grad, epoch_plan, flat, kick_at, lr_at, set_deter
 from .phi_metrics import cos, load_final, load_pre
 
 
+HVP_CHUNK = int(os.environ.get("KEYSEL_HVP_CHUNK", 256))
+
+
 def hvp(model, theta, x, y, v):
     """H v for the mean cross-entropy of batch (x, y) at `theta` (no weight decay). Compiled forward-over-reverse
-    on CUDA by default (keysel.fastgrad); eager double backward with KEYSEL_COMPILE=0 or on CPU."""
+    on CUDA by default (keysel.fastgrad); eager double backward with KEYSEL_COMPILE=0 or on CPU.
+
+    Batches larger than KEYSEL_HVP_CHUNK (default 256) are processed in chunks: the HVP of a mean loss is the
+    size-weighted sum of the chunks' HVPs (exact for per-sample normalisation: GroupNorm / LayerNorm, no batch
+    statistics). Halves the peak memory of a 512-image step."""
+    if len(x) > HVP_CHUNK and not any(isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for m in model.modules()):
+        n = len(x)
+        out = None
+        for c in range(0, n, HVP_CHUNK):
+            xc, yc = x[c:c + HVP_CHUNK], y[c:c + HVP_CHUNK]
+            h = hvp(model, theta, xc, yc, v) * (len(xc) / n)
+            out = h if out is None else out + h
+        return out
     if fastgrad.enabled(theta):
         return fastgrad.hvp_compiled(model, theta, x, y, v)
     set_flat(model, theta)

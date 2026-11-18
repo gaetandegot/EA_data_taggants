@@ -164,3 +164,24 @@ def test_config_overrides_and_select(tmp_path):
     assert res["scores"]["selected"]["sum"] >= max(res["scores"]["any"]["sum"], res["scores"]["same"]["sum"])
     score = torch.load(out / "select_k2" / "scores.pt", weights_only=False)
     assert score.shape == (len(fake_data()[1]),) and (score >= 0).all()
+
+
+def test_chunked_hvp_equals_full_batch():
+    """hvp() splits batches larger than KEYSEL_HVP_CHUNK; the size-weighted sum must equal the full-batch HVP."""
+    import keysel.phi_lin as L
+    from keysel.phi import flat
+    torch.manual_seed(0)
+    m = build_cifar_model("tinysmooth_gn").double()
+    th = flat(m).clone()
+    v = torch.randn_like(th)
+    x = torch.rand(10, 3, 32, 32, dtype=torch.float64)
+    y = torch.randint(0, 100, (10,))
+    old = L.HVP_CHUNK
+    try:
+        L.HVP_CHUNK = 1000
+        full = L.hvp(m, th, x, y, v)
+        L.HVP_CHUNK = 4  # chunks of 4, 4, 2
+        chunked = L.hvp(m, th, x, y, v)
+    finally:
+        L.HVP_CHUNK = old
+    assert float((chunked - full).norm() / full.norm()) < 1e-12
