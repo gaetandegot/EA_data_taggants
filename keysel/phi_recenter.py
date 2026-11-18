@@ -378,11 +378,12 @@ if __name__ == "__main__":
     ap.add_argument("--probe", action="store_true", help="stationarity probe at the current poisons (no iteration)")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
+    eps = json.loads((Path(a.run) / "config.json").read_text()).get("eps", 16.0) / 255  # the run's L_inf budget
     if a.probe:
         radii = (0.5, 0.25, 0.125, 0.0625, 0.03125) if a.radii is None else tuple(float(x) for x in a.radii.split(","))
-        run_probe(a.run, a.k0, radii, steps=a.steps, device=dev, log=lambda s: print(s, flush=True), tag=a.tag)
+        run_probe(a.run, a.k0, radii, steps=a.steps, eps=eps, device=dev, log=lambda s: print(s, flush=True), tag=a.tag)
         raise SystemExit(0)
-    run_recenter(a.run, a.k0, a.iters, a.radius, a.steps, a.restarts,
+    run_recenter(a.run, a.k0, a.iters, a.radius, a.steps, a.restarts, eps=eps,
                  device=dev, log=lambda s: print(s, flush=True), ladder=tuple(float(x) for x in a.ladder.split(",")),
                  adaptive=a.adaptive, stop_gain=a.stop_gain, init=a.init, cache=a.cache, two_cand=a.two_cand,
                  rho_up=a.rho_up)
