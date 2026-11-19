@@ -128,7 +128,7 @@ def _dev(d, device):
 
 def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 255, out_name="e2", device="cuda",
                  log=print, ladder=(0.5, 0.25, 0.125, 0.0625), adaptive=False, stop_gain=0.0, init="B", subdir=None,
-                 cache=False, two_cand=False, rho_up=0.25):
+                 cache=False, two_cand=False, rho_up=0.25, init_file=None, budget=None):
     """cache=True: keep the current trajectory, the adjoint and every finished candidate in <out>/state, so a new call
     (or a call after a kill) resumes inside an iteration instead of recomputing them; also reuses the clean steps of
     epoch k0 across replays. Bit-identical to cache=False except for the crafting seed, which then follows the global
@@ -150,6 +150,11 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     pd = rp.pidx.to(device)
     X, y = rp.Xf[pd].clone(), rp.ytr[pd]
     groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(len(ky))]
+    free = None
+    if budget is not None:  # data budget: only the first `budget` images of each key may be perturbed
+        free = torch.zeros(len(P["idx"]), dtype=torch.bool, device=device)
+        for g in groups:
+            free[g[:budget]] = True
     final = _load(run / "R0" / "final.pt")["theta"].to(device, rp.dtype)
     jA = keys_report(rp.model, final, kx, ky)
     hist_f = out / "history.json"
@@ -160,6 +165,8 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
         return hist
     if cur_f.exists():
         X_cur = _load(cur_f)["X_signed"].to(device, rp.dtype)
+    elif init_file is not None:  # explicit starting poisons (e.g. GM at a data budget, keysel.phi_budget)
+        X_cur = _load(init_file)["X_signed"].to(device, rp.dtype)
     elif init == "gm":  # start from the gradient-matching poisons of run R2 (crafted on Alice's final model)
         X_cur = P["X_signed"].to(device, rp.dtype)
     elif init == "gm8":  # gradient matching with 8 restarts (keysel.phi_gm8), same images
@@ -239,7 +246,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             d0 = X_cur - X
             res = craft_B(rp, Pb, k0, X, y, groups, eps, steps, restarts, tau=r / 2,
                           gen=torch.Generator().manual_seed(1000 * seed_it + attempt), thetas=pres, delta0=d0,
-                          radius=r, log=log)
+                          radius=r, log=log, free=free)
             X_new = (X + res["delta"]).clamp(0, 1)
             pred = sum(res["F_best"]) - sum(res["F_init"])
             thN, startsN, presN = bob_traj(rp, k0, X_new, head=head)
@@ -323,6 +330,11 @@ def run_probe(run, k0, radii_over_eps=(0.5, 0.25, 0.125, 0.0625, 0.03125), steps
     pd = rp.pidx.to(device)
     X, y = rp.Xf[pd].clone(), rp.ytr[pd]
     groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(len(ky))]
+    free = None
+    if budget is not None:  # data budget: only the first `budget` images of each key may be perturbed
+        free = torch.zeros(len(P["idx"]), dtype=torch.bool, device=device)
+        for g in groups:
+            free[g[:budget]] = True
     X_cur = _load(out / "poisons_current.pt")["X_signed"].to(device, rp.dtype)
     thB, starts, pres = bob_traj(rp, k0, X_cur)
     rep = keys_report(rp.model, thB, kx, ky)
@@ -376,6 +388,9 @@ if __name__ == "__main__":
                     help="two candidates per iteration: middle radius, then 2r if real/predicted >= --rho-up else r/2")
     ap.add_argument("--rho-up", type=float, default=0.25)
     ap.add_argument("--probe", action="store_true", help="stationarity probe at the current poisons (no iteration)")
+    ap.add_argument("--init-file", default=None, help="starting poisons file (X_signed), overrides --init")
+    ap.add_argument("--budget", type=int, default=None, help="only the first N images of each key may be perturbed")
+    ap.add_argument("--subdir", default=None, help="output sub-folder of <run>/e2/k<k0>/ (default from --init)")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     eps = json.loads((Path(a.run) / "config.json").read_text()).get("eps", 16.0) / 255  # the run's L_inf budget
@@ -386,4 +401,4 @@ if __name__ == "__main__":
     run_recenter(a.run, a.k0, a.iters, a.radius, a.steps, a.restarts, eps=eps,
                  device=dev, log=lambda s: print(s, flush=True), ladder=tuple(float(x) for x in a.ladder.split(",")),
                  adaptive=a.adaptive, stop_gain=a.stop_gain, init=a.init, cache=a.cache, two_cand=a.two_cand,
-                 rho_up=a.rho_up)
+                 rho_up=a.rho_up, init_file=a.init_file, budget=a.budget, subdir=a.subdir)

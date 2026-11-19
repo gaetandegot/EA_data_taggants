@@ -107,7 +107,7 @@ function machineState(hist, now) {
   if (h.imagenet_cron) probs.push({ sev: "warning", msg: "the ImageNet supervisor cron is installed here and competes for the GPU (launch_supervised.sh --uninstall)" });
   if (!st.all_done && !h.pipeline_running && w.state === "open") {
     if (w.seconds != null && w.seconds < 1800) probs.push({ sev: "info", msg: "not running: less than 30 min left in the window" });
-    else if (h.gpu_mem_used_mb >= 2000 && !(h.gpu_mem_free_mb >= 10240)) probs.push({ sev: "warning", msg: `not running: GPU busy (${h.gpu_mem_used_mb} MiB used by someone else, ${h.gpu_mem_free_mb ?? "?"} MiB free; starts when >= 10 GB is free)` });
+    else if (h.gpu_mem_used_mb >= 2000 && !(h.gpu_mem_free_mb >= 13312)) probs.push({ sev: "warning", msg: `not running: GPU busy (${h.gpu_mem_used_mb} MiB used by someone else, ${h.gpu_mem_free_mb ?? "?"} MiB free; starts when >= 13 GB is free)` });
     else if (!h.gave_up) probs.push({ sev: "error", msg: "not running although the window is open and the GPU is free" });
   }
   const recent = hist.slice(-6).filter(r => r.ok && r.status && r.status.relaunched).length;
@@ -212,6 +212,30 @@ function selectTable(runs) {
     <p class="small">Score: best first-order decrease of the linearised key loss within the eps ball, per image (adjoint along Alice, k0 = 32). "selected" = top images by that score; "aligned" = top by the cosine between the image's clean gradient and the adjoint direction; "gainnorm" = top by score / gradient norm. The same optimiser (problem B) is run on each set; real Bob with that set as the last batch.</p>`;
 }
 
+function robustTable(runs) {
+  const c = x => x ? `${f3(x.ce)} (${x.hits}/${x.n})` : "-";
+  const vname = { shuffle: "shuffled order (ResNet)", arch: "DeiT-tiny Bob", both: "DeiT-tiny + shuffled" };
+  const k0s = [32, 28, 24];
+  const rows = ["shuffle", "arch", "both"].flatMap(v => k0s.map((k, i) => `<tr>${i === 0 ? `<td rowspan="3">${vname[v]}</td>` : ""}<td>k0 = ${k}</td>${runs.map(r => {
+    const rv = r.robust && r.robust[v], row = rv && rv.k0[String(k)];
+    return `<td class="num">${c(row && row.gm)}</td><td class="num">${c(row && row.ladder)}</td><td class="num small">${i === 0 ? c(rv && rv.clean) : ""}</td>`;
+  }).join("")}</tr>`)).join("");
+  return `<div class="tablewrap"><table><tr><th>Bob</th><th></th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: GM</th><th class="num">ladder</th><th class="num">clean</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">Bob retrained from scratch (not Alice): key CE (hits) with the hard-setting GM start poisons vs the final ladder poisons of that k0, and without poisons (clean).</p>`;
+}
+
+function budgetTable(runs) {
+  const r = runs[0], b = r && r.budget;
+  if (!b) return "";
+  const bs = [...new Set([...Object.keys(b.gm || {}), ...Object.keys(b.ladder || {})].map(Number))].sort((x, y) => x - y);
+  const rows = bs.map(k => {
+    const g = b.gm[String(k)], l = b.ladder[String(k)];
+    return `<tr><td>${k}</td><td class="num">${g ? `${f3(g.ce)} (${g.hits}/10)` : "-"}</td><td class="num">${l && l.ce != null ? `${f3(l.ce)} (${l.hits}/10), ${l.count}/4 it` : (l ? `${l.count}/4 it` : "not run")}</td></tr>`;
+  }).join("");
+  return `<div class="tablewrap"><table><tr><th>images per key</th><th class="num">GM: key CE (hits)</th><th class="num">ladder: key CE (hits)</th></tr>${rows}</table></div>
+    <p class="small">DeiT-tiny (lr ${esc(b.lr)}), 10 keys, same-label, eps 8, k0 = 28, seed ${esc(r.seed)}; positions beyond the budget keep their clean images. Alice's key CE: ${f3(b.alice)}. Threshold of interest: 2/10 hits.</p>`;
+}
+
 function seedsTable(machines) {
   const all = summaries(machines);
   if (!all.length) return "";
@@ -227,7 +251,13 @@ function seedsTable(machines) {
   if (sel.length) html += `<h2>Adjoint image selection (label-free run, k0 = 32)</h2>${selectTable(sel)}`;
   if (hard.length) html += `<h2>Hard same-label, ResNet18-GN-SiLU (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(hard)}`;
   const deit = all.filter(r => r.preset === "hard_deit");
-  if (deit.length) html += `<h2>Hard same-label, DeiT-tiny (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(deit)}`;
+  if (deit.length) html += `<h2>Hard same-label, DeiT-tiny at lr 0.05 (under-fitted Alice): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(deit)}`;
+  const deit2 = all.filter(r => r.preset === "deit_auto" || r.preset === "deit_auto_decide");
+  if (deit2.length) html += `<h2>Hard same-label, DeiT-tiny at the searched lr (${[...new Set(deit2.map(r => r.lr).filter(x => x != null))].join(", ") || "search running"}): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(deit2)}`;
+  const rob = all.filter(r => r.preset === "robust");
+  if (rob.length) html += `<h2>Robustness: Bob retrained from scratch</h2>${robustTable(rob)}`;
+  const bud = all.filter(r => r.preset === "budget");
+  if (bud.length) html += `<h2>Data budget per key: GM vs 4-iteration ladder (DeiT-tiny, k0 = 28)</h2>${budgetTable(bud)}`;
   return html;
 }
 
@@ -237,7 +267,7 @@ function render(D, nowMs) {
   const machines = D.aliases.map(a => ({ alias: a, hist: D.history[a] || [], ...machineState(D.history[a] || [], now) }));
   const alerts = machines.flatMap(m => m.probs.filter(p => p.sev !== "info").map(p => ({ sev: p.sev, msg: `${m.st ? m.st.host : m.alias}: ${p.msg}` })));
   const next = (D.tasks || []).map(t => t.next).filter(Boolean).sort()[0];
-  return `<h1>Late-window experiments: label-free, selection, hard same-label (ResNet, DeiT)</h1>
+  return `<h1>Late-window experiments: label-free, selection, hard same-label (ResNet, DeiT), robustness, budget</h1>
     <div class="sub">dashboard written ${ago(D.generated, now)} (${new Date(D.generated).toLocaleString()}) &middot; next scheduled check ${next ? new Date(next).toLocaleString() : "none (tasks not installed?)"} &middot; this page reloads every 2 min</div>
     <div class="alerts">${alerts.length ? alerts.map(a => `<div class="alert ${a.sev}">${esc(a.msg)}</div>`).join("") : `<div class="alert info">no problem detected</div>`}</div>
     <div class="grid">${machines.map(m => card(m.alias, m.hist, now)).join("")}</div>

@@ -2,9 +2,10 @@
 # Called over SSH by the laptop monitor (scripts/phi_watch/PhiWatch.ps1):
 #   ssh <machine> bash ~/EA/EA_data_taggants/scripts/phi_tick.sh
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
-#   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit
+#   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit | deit_auto | deit_auto_decide | export
+#                                  | robust | budget
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
-# >= 30 min left, GPU unused or >= 10 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
+# >= 30 min left, GPU unused or >= 13 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
 # preset's settings; then prints the state as ONE JSON line (scripts/phi_status.py --chain).
 # This relaunches the queue after the nightly 00:33 cleanup: the user has taken responsibility for that (see
 # CLAUDE.md, "Nightly cleanup"). `bash scripts/phi_launch.sh --stop` unregisters every job of this machine.
@@ -15,7 +16,7 @@ pointer="$HOME/.config/data-taggants/phi_run.$(hostname -s)"
 [ -f "$pointer" ] || exec /usr/bin/python3 "$repo/scripts/phi_status.py" --none
 
 marker() {  # marker <run folder> <preset>: file whose existence means the job is finished
-  case $2 in select|select2) echo "$1/state/$2.done" ;; *) echo "$1/state/all.done" ;; esac
+  case $2 in select|select2|export) echo "$1/state/$2.done" ;; *) echo "$1/state/all.done" ;; esac
 }
 SEED="" R="" PRESET=""
 while read -r s r p; do
@@ -33,8 +34,8 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
   read -r wstate _ wleft <<< "$(/usr/bin/python3 "$repo/scripts/gpu_window.py" status)"
   fails=$(cat "$R/state/failures" 2>/dev/null || echo 0)
   read -r mem free <<< "$(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
-  # GPU usable: (almost) unused, or shared with another job but >= 10 GB free (chunked HVP peak fits)
-  gpu_ok=0; { [ "${mem:-99999}" -lt 2000 ] || [ "${free:-0}" -ge 10240 ]; } && gpu_ok=1
+  # GPU usable: (almost) unused, or shared with another job but >= 13 GB free (our peak was ~10-12 GB)
+  gpu_ok=0; { [ "${mem:-99999}" -lt 2000 ] || [ "${free:-0}" -ge 13312 ]; } && gpu_ok=1
   if [ "$wstate" = open ] && [ "$wleft" -ge 1800 ] && [ "$fails" -lt 8 ] && [ $gpu_ok = 1 ]; then
     case $PRESET in
       labelfree) job=seed set="" ;;
@@ -42,10 +43,16 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
       hard_deit) job=seed set="n_keys=20 per_key=25 eps=8 pick=target arch=deit_tiny_cifar" ;;
       select) job=select set="" ;;
       select2) job=select2 set="" ;;
+      deit_auto) job=deit_auto set="" ;;
+      deit_auto_decide) job=deit_auto set="" decide=1 ;;
+      export) job=export set="" ;;
+      robust) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_s$SEED" ;;
+      budget) job=budget set="" ;;
       *) echo "error: unknown preset $PRESET in $pointer" >&2; exit 1 ;;
     esac
     # whole subshell redirected: nothing may keep the caller's stdout (ssh channel / pipe) open
-    ( cd "$repo" && SEED=$SEED R=$R JOB=$job SET=$set exec setsid nohup bash scripts/queue_phi_seed.sh ) \
+    ( cd "$repo" && SEED=$SEED R=$R JOB=$job SET=$set DECIDE=${decide:-0} SRC=${src:-} \
+        exec setsid nohup bash scripts/queue_phi_seed.sh ) \
       >> "$R/queue.log" 2>&1 < /dev/null &
     echo "$(date -Is) relaunch by phi_tick ($PRESET, queue was not running)" >> "$R/state/events.log"
     relaunched="--relaunched"

@@ -125,7 +125,11 @@ def imagenet_cron():
 
 PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label, 20 keys x 25, eps 8",
            "select": "adjoint image selection (k0=32)",
-           "select2": "normalised image selection (k0=32)", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
+           "select2": "normalised image selection (k0=32)",
+           "deit_auto": "DeiT-tiny, same-label, 20 keys x 25, eps 8, lr search",
+           "deit_auto_decide": "DeiT-tiny, same-label, 20 keys x 25, eps 8, lr search (decides)",
+           "export": "export poisons to the shared folder", "robust": "robustness: shuffle / DeiT / both",
+           "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
 def select_stages(r, job="select"):
@@ -150,6 +154,58 @@ def select_stages(r, job="select"):
                        f"B + real Bob {nb}/3 sets", "updated": iso(mtime(log))}]
     remaining = 0 if res.get("done") else 50 * (1 - (int(adj) + int(sc) + nb) / 5)
     return stages, remaining
+
+
+EPOCH_RE = r'^\{"epoch"'
+
+
+def deit_auto_stages(r):
+    """lr search (one Alice per candidate folder r/lr*) then the run in r/chosen."""
+    cands = sorted(r.glob("lr*"), key=lambda p: float(p.name[2:]) if p.name[2:].replace(".", "").isdigit() else 0)
+    ch = r / "chosen"
+    lr = ch.resolve().name[2:] if ch.exists() else None
+    txt = ", ".join(f"lr {c.name[2:]}: {count(c / 'R0' / 'log.jsonl', EPOCH_RE)}/40" for c in cands)
+    search = {"name": "lr_search", "done": lr is not None, "count": int(lr is not None), "total": 1,
+              "text": (f"chosen lr {lr} | " if lr else "") + (txt or "pending"), "updated": None}
+    if lr is None:
+        n = sum(count(c / "R0" / "log.jsonl", EPOCH_RE) for c in cands)
+        return [search], 60 * (1 - n / 120) + 330, {}, {}, None
+    stages, remaining, ab, cfg = run_stages(ch.resolve())
+    return [search] + stages, remaining, ab, cfg, ch.resolve()
+
+
+def robust_stages(r):
+    res = jload(r / "results.json") or {}
+    vs = [v for v in ("shuffle", "arch", "both")]
+    k0s = res.get("k0s", [32, 28, 24])
+    total = len(vs) * (1 + 2 * len(k0s))
+    n = sum(("clean" in res.get(v, {})) + sum(len(row) for row in res.get(v, {}).get("k0", {}).values()) for v in vs)
+    done = (r / "state" / "all.done").exists()
+    return [{"name": "robust", "done": done, "count": n, "total": total,
+             "text": f"{n}/{total} trainings from scratch (3 variants x (clean + GM/ladder at {len(k0s)} k0))",
+             "updated": iso(mtime(r / "robust.log"))}], 0 if done else 130 * (1 - n / total), res
+
+
+def budget_stages(r):
+    stages, _, _, cfg = run_stages(r)
+    stages = [s for s in stages if s["name"] in ("alice", "gm")]
+    res = jload(r / "budget" / "results.json") or {}
+    budgets = res.get("budgets", [2, 5, 10, 25, 50])
+    ng = len(res.get("gm", {}))
+    stages.append({"name": "budget_gm", "done": bool(res.get("done")), "count": ng, "total": len(budgets),
+                   "text": f"GM + real Bob at {ng}/{len(budgets)} budgets", "updated": iso(mtime(r / "budget_gm.log"))})
+    rem = 0 if res.get("done") else 30
+    for b in (2, 5, 10):
+        h = jload(r / "e2" / "k28" / f"budget_b{b}" / "history.json") or {}
+        acc = h.get("accepted", [])
+        e = {"name": f"budget_ladder_b{b}", "done": bool(h.get("stopped")) or len(acc) >= 4, "count": len(acc), "total": 4,
+             "text": f"{len(acc)}/4 iterations", "updated": iso(mtime(r / f"budget_ladder_b{b}.log"))}
+        if acc and "ce" in acc[-1]:
+            e.update(ce=acc[-1]["ce"], hits=sum(acc[-1]["hits"]), n_keys=len(acc[-1]["hits"]),
+                     min_margin=min(acc[-1]["margin"]))
+        stages.append(e)
+        rem += 0 if e["done"] else 60 * (4 - len(acc)) / 4
+    return stages, rem, res, cfg
 
 
 def run_stages(r):
@@ -177,7 +233,7 @@ def run_stages(r):
     nk = sum(1 for row in ab.get("k0", {}).values() if len(row) >= 3)  # k0 with all three arms
     done = (st / "ablation.done").exists() and (st / "ablation3.done").exists()
     if cfg.get("pick") == "target" or cfg.get("ablation") is False:
-        stages.append({"name": "ablation", "done": done, "count": 1, "total": 1, "text": "not used (same-label run)",
+        stages.append({"name": "ablation", "done": True, "count": 1, "total": 1, "text": "not used (same-label run)",
                        "updated": None})
     else:
         stages.append({"name": "ablation", "done": done, "count": nk, "total": len(k0s),
@@ -230,7 +286,28 @@ def summary(seed, r, preset, done):
         out["select"] = {"scores": res.get("scores"), "bob": {k: {"ce": v["ce"], "hits": sum(v["hits"])}
                                                              for k, v in res.get("bob", {}).items()}}
         return out
-    stages, _, ab, cfg = run_stages(r)
+    if preset == "export":
+        return out
+    if preset == "robust":
+        res = robust_stages(r)[2]
+        rep = lambda x: {"ce": x["ce"], "hits": sum(x["hit"]), "n": len(x["hit"])}  # noqa: E731
+        out["robust"] = {v: {"spec": res[v].get("spec"), "clean": rep(res[v]["clean"]) if "clean" in res[v] else None,
+                             "k0": {k: {n: rep(x) for n, x in row.items()} for k, row in res[v].get("k0", {}).items()}}
+                         for v in ("shuffle", "arch", "both") if v in res}
+        return out
+    if preset == "budget":
+        stages, _, res, cfg = budget_stages(r)
+        out["budget"] = {"gm": {b: {"ce": x["ce"], "hits": sum(x["hit"] if "hit" in x else x["hits"])}
+                                for b, x in res.get("gm", {}).items()},
+                         "ladder": {s["name"].split("_b")[1]: {k: s.get(k) for k in ("count", "ce", "hits", "n_keys")}
+                                    for s in stages if s["name"].startswith("budget_ladder")},
+                         "alice": res.get("alice", {}).get("ce"), "lr": cfg.get("lr")}
+        return out
+    if preset in ("deit_auto", "deit_auto_decide"):
+        stages, _, ab, cfg, chosen = deit_auto_stages(r)
+        out["lr"] = cfg.get("lr") if cfg else None
+    else:
+        stages, _, ab, cfg = run_stages(r)
     out["n_keys"] = cfg.get("n_keys")
     out["ladders"] = [{k: s.get(k) for k in ("name", "count", "total", "text", "ce_iters", "hits", "n_keys", "start_hits")}
                       for s in stages if s["name"].startswith("ladder_k")]
@@ -240,17 +317,37 @@ def summary(seed, r, preset, done):
 
 def status(r, relaunched, preset="labelfree"):
     st = r / "state"
+    logdir = r
     if preset in ("select", "select2"):
         stages, remaining = select_stages(r, preset)
         ab, cfg = {}, jload(r / "config.json") or {}
         all_done = (st / f"{preset}.done").exists()
+    elif preset in ("deit_auto", "deit_auto_decide"):
+        stages, remaining, ab, cfg, chosen = deit_auto_stages(r)
+        logdir = chosen or r
+        all_done = (st / "all.done").exists()
+    elif preset == "export":
+        all_done = (st / "export.done").exists()
+        stages, remaining, ab, cfg = [{"name": "export", "done": all_done, "count": int(all_done), "total": 1,
+                                       "text": "poisons copied to the shared folder" if all_done else "pending",
+                                       "updated": None}], 0, {}, jload(r / "config.json") or {}
+    elif preset == "robust":
+        stages, remaining, _ = robust_stages(r)
+        ab, cfg = {}, {}
+        all_done = (st / "all.done").exists()
+    elif preset == "budget":
+        stages, remaining, _, cfg = budget_stages(r)
+        ab = {}
+        all_done = (st / "all.done").exists()
     else:
         stages, remaining, ab, cfg = run_stages(r)
         all_done = (st / "all.done").exists()
     current = read(st / "current", "")
     running = queue_running(r)
     cur = next((s for s in stages if s["name"] == current), None)
-    log = r / (f"{current}.log" if current and current not in ("idle", "done") else "queue.log")
+    log = logdir / f"{current}.log" if current and current not in ("idle", "done") else r / "queue.log"
+    if not log.exists():
+        log = r / f"{current}.log" if (r / f"{current}.log").exists() else r / "queue.log"
     mem, util, free = gpu_mem()
     fails = int(read(st / "failures", "0") or 0)
     events = []
@@ -290,11 +387,17 @@ def main():
             if len(f) >= 2:
                 preset = f[2] if len(f) > 2 else "labelfree"
                 r = Path(f[1])
-                done = (r / "state" / (f"{preset}.done" if preset in ("select", "select2") else "all.done")).exists()
+                done = (r / "state" / (f"{preset}.done" if preset in ("select", "select2", "export") else "all.done")).exists()
                 jobs.append((int(f[0]), r, preset, done))
         active = next((j for j in jobs if not j[3]), jobs[-1])
         s = status(active[1], relaunched, active[2])
-        s["chain"] = [summary(*j) for j in jobs]
+        s["chain"] = []
+        for j in jobs:  # a broken job summary must not hide the machine's status
+            try:
+                s["chain"].append(summary(*j))
+            except Exception as e:  # noqa: BLE001
+                s["chain"].append({"seed": j[0], "run_dir": str(j[1]), "run_name": j[1].name, "preset": j[2],
+                                   "label": PRESETS.get(j[2], j[2]), "done": j[3], "error": repr(e)[:200]})
         s["chain_active"] = jobs.index(active)
         print(json.dumps(s))
         return

@@ -98,11 +98,12 @@ def objective_groups(rp, thetas, parts, epochs_w, X, y, delta, groups, B, chunk)
 
 
 def craft_B(rp, P_e, k0, X, y, groups, eps=16 / 255, steps=240, restarts=2, tau=0.1, gen=None, chunk=100,
-            log=print, thetas=None, delta0=None, radius=None):
+            log=print, thetas=None, delta0=None, radius=None, free=None):
     """Signed-Adam minimisation of problem B for the images X (n,3,32,32) in [0,1], labels y.
 
     thetas: parameters at which the poison-step gradients are evaluated (default Alice's pre_e; for the re-centred
     iteration Bob's). delta0 / radius: start from delta0 and stay within ||delta - delta0||_inf <= radius.
+    free: boolean mask (n,) of the images that may be perturbed (data budget); the others keep delta = 0.
     """
     gen = gen if gen is not None else torch.Generator().manual_seed(0)
     epochs_w = list(range(k0, rp.epochs))
@@ -117,6 +118,8 @@ def craft_B(rp, P_e, k0, X, y, groups, eps=16 / 255, steps=240, restarts=2, tau=
     hi = torch.min(torch.full_like(X, eps), 1 - X)
     if delta0 is not None and radius is not None:
         lo, hi = torch.max(lo, delta0 - radius), torch.min(hi, delta0 + radius)
+    if free is not None:  # data budget: only these images may be perturbed, the others stay exactly clean
+        lo[~free], hi[~free] = 0.0, 0.0
     F_zero = objective_groups(rp, thetas, parts, epochs_w, X, y, torch.zeros_like(X), groups, B, chunk)
     F_init = None if delta0 is None else objective_groups(rp, thetas, parts, epochs_w, X, y, delta0, groups, B, chunk)
     runs = []

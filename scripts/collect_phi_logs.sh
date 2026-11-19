@@ -10,7 +10,7 @@ out="$repo/outputs/phi_results/$host"
 mkdir -p "$out"
 cd /Data/gaetan.degot/checkpoints 2>/dev/null || { echo "$host: no /Data/gaetan.degot/checkpoints"; exit 0; }
 n=0
-for d in phi10_silu_s* phi20_e8_same_s* phi20_e8_same_deit_s*; do
+for d in phi10_* phi20_* phi_robust_*; do
   [ -d "$d" ] || continue
   rsync -a --prune-empty-dirs --include='*/' --include='*.log' --include='*.json' --include='*.jsonl' \
     --exclude='*' "$d" "$out/" && n=$((n + 1))
