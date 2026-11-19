@@ -191,3 +191,31 @@ def test_robust_gm_only_from_run_poisons_file(tmp_path):
     assert res["done"] and set(res["shuffle"]["k0"]) == {"2"} and set(res["shuffle_spread"]["k0"]) == {"0", "2"}
     assert all(set(row) == {"gm"} for v in ("shuffle", "shuffle_spread") for row in res[v]["k0"].values())
 
+
+def test_budget_with_merged_poison_batch(tmp_path):
+    """10 keys x 4 = 40 poison positions with bs 16: one merged poison step (lr x 3). Alice, GM, the budget Bobs and
+    a ladder iteration all run; the full budget reuses the run's own GM poisons."""
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "bs=16", "n_keys=10", "per_key=4", "steps=2", "restarts=1", "eps=8",
+            "pick=target", "k0s=2"]
+    run = _run(tmp_path, "budget_big", 7, sets, data_f)
+    rp, P, cfg = phi_budget._replay_with(run, "cpu", data_f)
+    assert rp.pscale == 3 and len(P["idx"]) == 40
+    th_end, _, _ = rp.forward(1, None)  # the replay reproduces Alice with the merged step
+    assert float((th_end - torch.load(run / "R0" / "final.pt", weights_only=False)["theta"].to(th_end)).norm()) < 1e-4
+    phi_budget.main(argparse.Namespace(run=str(run), k0=2, budgets="2,4", summary=False, data=str(data_f)))
+    res = json.loads((run / "budget" / "results.json").read_text())
+    assert res["done"] and set(res["gm"]) == {"2", "4"}
+    full = torch.load(run / "budget" / "poisons_b4.pt", weights_only=False)["X_signed"]
+    assert torch.equal(full, P["X_signed"])
+    from keysel.phi_recenter import run_recenter
+    import keysel.data as kd
+    real = kd.load_cifar100
+    kd.load_cifar100 = lambda device="cpu", **k: torch.load(data_f, weights_only=False)
+    try:
+        h = run_recenter(run, 2, iters=1, steps=2, ladder=(0.5,), device="cpu", log=lambda s: None, eps=8 / 255,
+                         init_file=str(run / "budget" / "poisons_b2.pt"), budget=2, subdir="budget_b2")
+    finally:
+        kd.load_cifar100 = real
+    assert len(h["attempts"]) == 1

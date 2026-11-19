@@ -63,6 +63,9 @@ def main(a):
         if str(b) in res["gm"]:
             continue
         f = out / f"poisons_b{b}.pt"
+        if not f.exists() and b == cfg["per_key"]:  # the full budget: the run's own GM poisons (same recipe)
+            torch.save({"idx": P["idx"], "X_signed": P["X_signed"], "keys": P["keys"], "key_of": P["key_of"],
+                        "budget": b}, f)
         if not f.exists():
             set_flat(rp.model, final)
             rp.model.eval()

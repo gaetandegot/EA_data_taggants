@@ -236,15 +236,17 @@ function spreadTable(runs, rob, note) {
 }
 
 function budgetTable(runs) {
-  const r = runs[0], b = r && r.budget;
+  const r = runs.find(x => x.preset === "budget") || runs[0], b = r && r.budget;
   if (!b) return "";
-  const bs = [...new Set([...Object.keys(b.gm || {}), ...Object.keys(b.ladder || {})].map(Number))].sort((x, y) => x - y);
+  const big = runs.find(x => x.preset === "budget100"), gb = (big && big.budget && big.budget.gm) || {};
+  const bs = [...new Set([...Object.keys(b.gm || {}), ...Object.keys(b.ladder || {}), ...Object.keys(gb)].map(Number))].sort((x, y) => x - y);
   const rows = bs.map(k => {
-    const g = b.gm[String(k)], l = b.ladder[String(k)];
-    return `<tr><td>${k}</td><td class="num">${g ? `${f3(g.ce)} (${g.hits}/10)` : "-"}</td><td class="num">${l && l.ce != null ? `${f3(l.ce)} (${l.hits}/10), ${l.count}/4 it` : (l ? `${l.count}/4 it` : "not run")}</td></tr>`;
+    const g1 = b.gm[String(k)], g2 = gb[String(k)], l = b.ladder[String(k)];
+    const gs = [g1, g2].filter(Boolean).map((g, i) => `${f3(g.ce)} (${g.hits}/10)${g1 && g2 && i === 1 ? " [10x100 run]" : ""}`).join(" / ");
+    return `<tr><td>${k}</td><td class="num">${gs || "-"}</td><td class="num">${l && l.ce != null ? `${f3(l.ce)} (${l.hits}/10), ${l.count}/4 it` : (l ? `${l.count}/4 it` : "not run")}</td></tr>`;
   }).join("");
   return `<div class="tablewrap"><table><tr><th>images per key</th><th class="num">GM: key CE (hits)</th><th class="num">ladder: key CE (hits)</th></tr>${rows}</table></div>
-    <p class="small">DeiT-tiny (lr ${esc(b.lr)}), 10 keys, same-label, eps 8, k0 = 28, seed ${esc(r.seed)}; positions beyond the budget keep their clean images. Alice's key CE: ${f3(b.alice)}. Threshold of interest: 2/10 hits.</p>`;
+    <p class="small">DeiT-tiny (lr ${esc(b.lr)}), 10 keys, same-label, eps 8, k0 = 28, seed ${esc(r.seed)}; positions beyond the budget keep their clean images. Budgets 75 and 100 come from a 10 x 100 run (new Alice, 1000 poison positions applied as one merged step with twice the learning rate). Alice's key CE: ${f3(b.alice)}. Threshold of interest: 2/10 hits.</p>`;
 }
 
 function seedsTable(machines) {
@@ -273,7 +275,7 @@ function seedsTable(machines) {
   if (spr.length) html += `<h2>Are concentrated poisons the problem? GM poisons in the last batch vs spread over the epoch (shuffled ResNet Bob)</h2>${spreadTable(spr, rob)}`;
   const same = all.filter(r => r.preset === "robust_same");
   if (same.length) html += `<h2>Easy setting (10 keys x 50, eps 16): does same-label GM transfer at all? Last batch vs spread (shuffled ResNet Bob)</h2>${spreadTable(same, null, "ResNet Bob retrained from scratch with another data order, the label-free run's same-label GM poisons (in Alice's own trajectory: 9-10/10 hits at k0 = 32).")}`;
-  const bud = all.filter(r => r.preset === "budget");
+  const bud = all.filter(r => r.preset === "budget" || r.preset === "budget100");
   if (bud.length) html += `<h2>Data budget per key: GM vs 4-iteration ladder (DeiT-tiny, k0 = 28)</h2>${budgetTable(bud)}`;
   return html;
 }

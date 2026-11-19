@@ -132,7 +132,8 @@ PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label,
            "robust_deit": "robustness of DeiT poisons: shuffle / ResNet / both",
            "robust_spread": "robustness, poisons spread over the epoch (shuffled Bob, GM, from k0 and epoch 0)",
            "robust_same": "label-free run's same-label GM poisons, shuffled Bob: last batch vs spread",
-           "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
+           "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28",
+           "budget100": "data budget, DeiT-tiny, 10 keys x 100 (merged poison step), GM at 50/75/100, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
 def select_stages(r, job="select"):
@@ -205,7 +206,7 @@ def budget_stages(r):
     stages.append({"name": "budget_gm", "done": bool(res.get("done")), "count": ng, "total": len(budgets),
                    "text": f"GM + real Bob at {ng}/{len(budgets)} budgets", "updated": iso(mtime(r / "budget_gm.log"))})
     rem = 0 if res.get("done") else 30
-    for b in (2, 5, 10):
+    for b in ((2, 5, 10) if cfg.get("per_key", 50) <= 50 else ()):  # the 10 x 100 run is GM only
         h = jload(r / "e2" / "k28" / f"budget_b{b}" / "history.json") or {}
         acc = h.get("accepted", [])
         e = {"name": f"budget_ladder_b{b}", "done": bool(h.get("stopped")) or len(acc) >= 4, "count": len(acc), "total": 4,
@@ -305,7 +306,7 @@ def summary(seed, r, preset, done):
                              "k0": {k: {n: rep(x) for n, x in row.items()} for k, row in res[v].get("k0", {}).items()}}
                          for v in ("shuffle", "arch", "both", "shuffle_spread") if v in res}
         return out
-    if preset == "budget":
+    if preset in ("budget", "budget100"):
         stages, _, res, cfg = budget_stages(r)
         out["budget"] = {"gm": {b: {"ce": x["ce"], "hits": sum(x["hit"] if "hit" in x else x["hits"])}
                                 for b, x in res.get("gm", {}).items()},
@@ -345,7 +346,7 @@ def status(r, relaunched, preset="labelfree"):
         stages, remaining, _ = robust_stages(r, preset)
         ab, cfg = {}, {}
         all_done = (st / "all.done").exists()
-    elif preset == "budget":
+    elif preset in ("budget", "budget100"):
         stages, remaining, _, cfg = budget_stages(r)
         ab = {}
         all_done = (st / "all.done").exists()

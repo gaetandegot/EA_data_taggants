@@ -8,7 +8,8 @@
 #             (keysel/phi_lr_choice.py; written here if DECIDE=1, else waited for), then the seed job in R/lr<chosen>
 #   export    copy the finished run's poisons to the shared folder outputs/phi_poisons/<run name> (keysel/phi_robust.py)
 #   robust    Bob retrained from scratch: shuffle / other architecture / both (keysel/phi_robust.py), poisons from SRC
-#   budget    DeiT-tiny, 10 keys x 50, k0=28: GM at every budget of BUDGETS, 4-iteration ladder at LADDER_BUDGETS
+#   budget    DeiT-tiny, 10 keys x PER_KEY (50), k0=28: GM at every budget of BUDGETS, 4-iteration ladder at
+#             LADDER_BUDGETS ("none": GM only); more than 512 positions = one merged poison step (keysel.phi.poison_scale)
 # Only runs inside the GPU window: each command is hard-killed MARGIN_MIN before the window ends and the queue then
 # waits for the next window. Exits non-zero on a crash (state/failures is incremented; the phi tick relaunches).
 # When the job is finished, starts the next job registered for this machine (scripts/phi_tick.sh).
@@ -177,7 +178,8 @@ case $JOB in
   budget)
     wait_file "$LRFILE" "DeiT learning rate"
     L=$(lr_chosen "$LRFILE")
-    SET="n_keys=10 per_key=50 eps=8 pick=target arch=deit_tiny_cifar lr=$L k0s=28"
+    SET="n_keys=10 per_key=${PER_KEY:-50} eps=8 pick=target arch=deit_tiny_cifar lr=$L k0s=28"
+    [ "$LADDER_BUDGETS" = none ] && LADDER_BUDGETS=""   # GM only
     stage alice
     stage gm
     while [ ! -f "$R/state/budget_gm.done" ]; do
