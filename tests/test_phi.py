@@ -7,7 +7,7 @@ import torch
 
 from keysel.craft import craft_key
 from keysel.models import build_cifar_model
-from keysel.phi import (batch_grad, epoch_plan, flat, kick_at, lr_at, random_direction, set_flat,
+from keysel.phi import (batch_grad, epoch_plan, flat, poison_scale, kick_at, lr_at, random_direction, set_flat,
                         train_traj)
 from keysel.phi_metrics import (compute_metrics, drift_curve, key_stats, load_final, load_pre, n_epochs,
                                 write_metrics)
@@ -107,8 +107,8 @@ def test_epoch_plan_determinism_and_variation():
 
 def test_epoch_plan_edge_cases():
     assert len(epoch_plan(100, torch.tensor([], dtype=torch.long), 0, 0, BS)) == 4  # no poison batch
-    with pytest.raises(ValueError):
-        epoch_plan(100, torch.arange(BS + 1), 0, 0, BS)
+    big = epoch_plan(100, torch.arange(BS + 1), 0, 0, BS)  # more poisons than a batch: one merged poison step
+    assert len(big[-1]) == BS + 1 and poison_scale(BS + 1, BS) == 2 and poison_scale(BS, BS) == 1
     full = epoch_plan(100, torch.arange(BS), 0, 0, BS)  # exactly one full poison batch
     assert len(full[-1]) == BS
 

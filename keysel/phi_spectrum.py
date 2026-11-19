@@ -80,6 +80,7 @@ def run_spectrum(run, iters=80, epochs=None, device="cuda", out_name="spectrum",
     a = argparse_ns(json.loads((run / "config.json").read_text()))
     Xtr, ytr, _, _ = load_cifar100(device="cpu")
     pidx = _load(run / "poisons.pt")["idx"].long().cpu()
+    assert len(pidx) <= a.bs, "phi_spectrum assumes the poisons fit one batch (no poison_scale)"
     n_steps = len(epoch_plan(len(Xtr), pidx, 0, a.seed, a.bs))
     total, warm = a.epochs * n_steps, a.warmup * n_steps
     model = build_cifar_model(a.arch).to(device)
@@ -181,6 +182,7 @@ def run_compare(run, iters=80, lin_name="lin_R2", out_name="spectrum", log=print
     a = argparse_ns(json.loads((run / "config.json").read_text()))
     n_train = len(load_cifar100(device="cpu")[1])
     pidx = _load(run / "poisons.pt")["idx"].long().cpu()
+    assert len(pidx) <= a.bs, "phi_spectrum assumes the poisons fit one batch (no poison_scale)"
     n_steps = len(epoch_plan(n_train, pidx, 0, a.seed, a.bs))
     with open(run / out_name / f"spectrum_m{iters}.csv") as f:
         spec_rows = list(csv.DictReader(f))

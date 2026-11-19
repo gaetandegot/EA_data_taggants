@@ -50,10 +50,31 @@ def lr_at(step, total, lr, warmup_steps=0, kind="cosine"):
     raise ValueError(kind)
 
 
+def poison_scale(n_poison, bs):
+    """Learning-rate factor of the poison step. More poisons than one batch (n > bs): they are still applied as ONE
+    step, with the learning rate of the m = ceil(n / bs) batches they would fill, i.e. each poison image weighs
+    gamma * m / n as in m separate batches; identical to m consecutive steps up to second order (the curvature
+    between those steps, which the linearisation neglects anyway). 1 when the poisons fit one batch."""
+    return max(1, math.ceil(n_poison / bs))
+
+
+def sgd_grads(model, x, y, chunk):
+    """Accumulate the gradient of the mean cross-entropy of (x, y) into .grad, in chunks of `chunk` images (exact for
+    per-sample normalisation, i.e. no BatchNorm). Returns the loss."""
+    n, tot = len(x), 0.0
+    for c in range(0, n, chunk):
+        xc, yc = x[c:c + chunk], y[c:c + chunk]
+        loss = F.cross_entropy(model(xc), yc) * (len(xc) / n)
+        loss.backward()
+        tot = tot + loss.detach()
+    return tot
+
+
 def epoch_plan(n_train, poison_idx, epoch, seed, bs):
     """Index batches of one epoch: shuffled clean images in batches of `bs`, then the poison batch last.
 
-    Independent of the image values, so Alice and Bob share exactly the same plan.
+    Independent of the image values, so Alice and Bob share exactly the same plan. The poison batch may hold more
+    than `bs` images: it is then one step with the learning rate scaled by poison_scale (see there).
     """
     pidx = torch.as_tensor(poison_idx, dtype=torch.long).cpu()
     mask = torch.ones(n_train, dtype=torch.bool)
@@ -63,8 +84,6 @@ def epoch_plan(n_train, poison_idx, epoch, seed, bs):
     clean = clean[torch.randperm(len(clean), generator=g)]
     batches = [clean[i:i + bs] for i in range(0, len(clean), bs)]
     if len(pidx):
-        if len(pidx) > bs:
-            raise ValueError(f"{len(pidx)} poisons do not fit one batch of {bs}")
         batches.append(pidx)
     return batches
 
@@ -83,10 +102,15 @@ def set_flat(model, vec):
 
 
 def batch_grad(model, theta, x, y):
-    """Flat gradient of the mean cross-entropy of batch (x, y) at parameters `theta` (no weight decay)."""
+    """Flat gradient of the mean cross-entropy of batch (x, y) at parameters `theta` (no weight decay). Batches
+    larger than 512 images (a merged poison batch) are summed in chunks (exact without BatchNorm)."""
     set_flat(model, theta.to(next(model.parameters()).device))
     model.train()
     params = list(model.parameters())
+    if len(x) > 512 and not any(isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for m in model.modules()):
+        n = len(x)
+        return sum(batch_grad(model, theta, x[c:c + 512], y[c:c + 512]) * (len(x[c:c + 512]) / n)
+                   for c in range(0, n, 512))
     loss = F.cross_entropy(model(x), y)
     return torch.cat([g.reshape(-1) for g in torch.autograd.grad(loss, params)])
 
@@ -138,6 +162,7 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
     y_p = ytr[pidx_d]
     n_steps = len(epoch_plan(len(Xf), pidx, 0, seed, bs))
     total = epochs * n_steps
+    pscale = poison_scale(len(pidx), bs)
     opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.0, weight_decay=wd)
     start = 0
     ck = out / "checkpoint.pt"
@@ -163,6 +188,7 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
             last = (j == len(plan) - 1) and len(pidx) > 0
             if last:
                 x, y = x_pois, y_p
+                lr_t = lr_t * pscale
                 if save_pre:
                     torch.save({"theta": flat(model).float().cpu() if dtype == torch.float32 else flat(model).cpu(),
                                 "lr": lr_t, "epoch": ep}, out / "traj" / f"pre_{ep:03d}.pt")
@@ -171,9 +197,12 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
                 x, y = Xf[bd], ytr[bd]
             for g in opt.param_groups:
                 g["lr"] = lr_t
-            loss = F.cross_entropy(model(x), y)
             opt.zero_grad(set_to_none=True)
-            loss.backward()
+            if len(y) > bs:  # a poison batch larger than one batch: same gradient, bounded memory
+                loss = sgd_grads(model, x, y, bs)
+            else:
+                loss = F.cross_entropy(model(x), y)
+                loss.backward()
             opt.step()
             if not last:
                 loss_sum += loss.detach() * len(y)

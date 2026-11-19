@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 
 from .models import build_cifar_model
-from .phi import _load, epoch_plan, flat, kick_at, lr_at, set_deterministic, set_flat
+from .phi import _load, epoch_plan, flat, kick_at, lr_at, poison_scale, set_deterministic, set_flat, sgd_grads
 from .phi_lin import hvp
 
 
@@ -40,6 +40,7 @@ class Replay:
         self.n_steps = len(epoch_plan(len(self.Xf), self.pidx, 0, seed, bs))
         self.total = epochs * self.n_steps
         self.warm = warmup_epochs * self.n_steps
+        self.pscale = poison_scale(len(self.pidx), bs)
         torch.manual_seed(seed)
         self.model = build_cifar_model(arch).to(device=device, dtype=dtype)
         self.opt = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.0, weight_decay=wd)
@@ -47,7 +48,8 @@ class Replay:
 
     # ---- building blocks --------------------------------------------------------------------------------------
     def lr_step(self, e, j):
-        return lr_at(e * self.n_steps + j, self.total, self.lr, self.warm, self.sched)
+        lr_t = lr_at(e * self.n_steps + j, self.total, self.lr, self.warm, self.sched)
+        return lr_t * self.pscale if j == self.n_steps - 1 and len(self.pidx) else lr_t
 
     def batch(self, e, j, plan=None):
         plan = plan if plan is not None else epoch_plan(len(self.Xf), self.pidx, e, self.seed, self.bs)
@@ -63,9 +65,11 @@ class Replay:
         self.model.train()
         for g in self.opt.param_groups:
             g["lr"] = lr_t
-        loss = F.cross_entropy(self.model(x), y)
         self.opt.zero_grad(set_to_none=True)
-        loss.backward()
+        if len(y) > self.bs:  # poison batch larger than one batch (train_traj does the same)
+            sgd_grads(self.model, x, y, self.bs)
+        else:
+            F.cross_entropy(self.model(x), y).backward()
         self.opt.step()
         return flat(self.model).clone()
 

@@ -63,3 +63,31 @@ def test_power_iteration_is_monotone_and_beats_random_start(tmp_path):
     assert all(b >= a - 1e-9 for a, b in zip(s, s[1:]))
     assert s[-1] >= s[0]
     assert set(res["profile_first_vector"]) == set(range(k + 1, EPOCHS))
+
+
+def test_merged_poison_batch_larger_than_bs(tmp_path):
+    """More poisons than one batch (here 40 > 32): ONE poison step with the lr of ceil(40/32) = 2 batches.
+    Alice (train_traj) and the Replay apply the same scaled step (faithful replay, chunked gradients), and the
+    merged step is first-order equal to two consecutive steps on the two halves."""
+    from keysel.phi import lr_at, poison_scale
+    pidx = torch.arange(50, 90)
+    train_traj("tinysmooth_gn", 0, tmp_path / "R0", DATA, pidx, X_signed=None, epochs=3, bs=BS, lr=0.05, wd=5e-4,
+               warmup_epochs=0, sched="cosine", device="cpu", dtype=D, log=lambda *_: None)
+    rp = Replay(tmp_path, "tinysmooth_gn", 0, DATA, pidx, 3, BS, 0.05, 5e-4, 0, "cosine", device="cpu", dtype=D)
+    assert rp.pscale == poison_scale(40, BS) == 2
+    j = rp.n_steps - 1
+    assert rp.lr_step(1, j) == 2 * lr_at(rp.n_steps + j, rp.total, 0.05, 0, "cosine")
+    th_end, _, _ = rp.forward(0, None)
+    assert float((th_end - load_final(tmp_path / "R0").to(D)).norm()) < 1e-10
+    assert max(d for _, d in rp.dev_log) < 1e-10
+    # first-order equivalence with two separate steps of gamma on the halves
+    x, y = rp.batch(1, j)
+    th0 = rp.pre(1)
+    gam = 1e-3
+    merged = rp.sgd(th0, x, y, 2 * gam)
+    rp_bs = rp.bs
+    rp.bs = 10 ** 9  # no chunking: plain steps on the halves
+    two = rp.sgd(rp.sgd(th0, x[:20], y[:20], gam), x[20:], y[20:], gam)
+    rp.bs = rp_bs
+    step = float((merged - th0).norm())
+    assert float((merged - two).norm()) < 1e-2 * step  # differs only at second order in gamma

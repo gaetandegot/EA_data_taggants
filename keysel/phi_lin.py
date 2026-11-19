@@ -71,6 +71,7 @@ def linearized_eta(arch, seed, data, poison_idx, X_signed, epochs=40, bs=512, lr
     ytr = ytr.to(device)
     pd = pidx.to(device)
     x_clean_p, y_p, x_signed = Xf[pd].clone(), ytr[pd], X_signed.to(device, dtype)
+    assert len(pidx) <= bs, "phi_lin assumes the poisons fit one batch (no poison_scale)"
     n_steps = len(epoch_plan(len(Xf), pidx, 0, seed, bs))
     total = epochs * n_steps
     opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.0, weight_decay=wd)
