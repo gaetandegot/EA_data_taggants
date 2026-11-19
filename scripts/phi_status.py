@@ -128,7 +128,8 @@ PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label,
            "select2": "normalised image selection (k0=32)",
            "deit_auto": "DeiT-tiny, same-label, 20 keys x 25, eps 8, lr search",
            "deit_auto_decide": "DeiT-tiny, same-label, 20 keys x 25, eps 8, lr search (decides)",
-           "export": "export poisons to the shared folder", "robust": "robustness: shuffle / DeiT / both",
+           "export": "export poisons to the shared folder", "robust": "robustness of ResNet poisons: shuffle / DeiT / both",
+           "robust_deit": "robustness of DeiT poisons: shuffle / ResNet / both",
            "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
@@ -288,7 +289,7 @@ def summary(seed, r, preset, done):
         return out
     if preset == "export":
         return out
-    if preset == "robust":
+    if preset in ("robust", "robust_deit"):
         res = robust_stages(r)[2]
         rep = lambda x: {"ce": x["ce"], "hits": sum(x["hit"]), "n": len(x["hit"])}  # noqa: E731
         out["robust"] = {v: {"spec": res[v].get("spec"), "clean": rep(res[v]["clean"]) if "clean" in res[v] else None,
@@ -331,7 +332,7 @@ def status(r, relaunched, preset="labelfree"):
         stages, remaining, ab, cfg = [{"name": "export", "done": all_done, "count": int(all_done), "total": 1,
                                        "text": "poisons copied to the shared folder" if all_done else "pending",
                                        "updated": None}], 0, {}, jload(r / "config.json") or {}
-    elif preset == "robust":
+    elif preset in ("robust", "robust_deit"):
         stages, remaining, _ = robust_stages(r)
         ab, cfg = {}, {}
         all_done = (st / "all.done").exists()

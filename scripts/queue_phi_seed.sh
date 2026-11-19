@@ -7,7 +7,7 @@
 #   deit_auto hard same-label DeiT-tiny: Alice at each learning rate of LRS (folders R/lr<lr>), the shared choice
 #             (keysel/phi_lr_choice.py; written here if DECIDE=1, else waited for), then the seed job in R/lr<chosen>
 #   export    copy the finished run's poisons to the shared folder outputs/phi_poisons/<run name> (keysel/phi_robust.py)
-#   robust    Bob retrained from scratch: shuffle / DeiT / both (keysel/phi_robust.py), poisons from SRC
+#   robust    Bob retrained from scratch: shuffle / other architecture / both (keysel/phi_robust.py), poisons from SRC
 #   budget    DeiT-tiny, 10 keys x 50, k0=28: GM at every budget of BUDGETS, 4-iteration ladder at LADDER_BUDGETS
 # Only runs inside the GPU window: each command is hard-killed MARGIN_MIN before the window ends and the queue then
 # waits for the next window. Exits non-zero on a crash (state/failures is incremented; the phi tick relaunches).
@@ -125,9 +125,10 @@ case $JOB in
     done
     finish "$JOB" ;;
 
-  export)
+  export)  # from the run folder (R, or R/chosen for a deit_auto job), named after the job folder
     dst=$REPO/outputs/phi_poisons/$(basename "$R")
-    "$PY" -m keysel.phi_robust --export --run "$R" --to "$dst" >> "$R/export.log" 2>&1 || { ev "FAILED export"; exit 1; }
+    src=$R; [ -e "$R/chosen" ] && src=$(readlink -f "$R/chosen")
+    "$PY" -m keysel.phi_robust --export --run "$src" --to "$dst" >> "$R/export.log" 2>&1 || { ev "FAILED export"; exit 1; }
     finish export ;;
 
   robust)

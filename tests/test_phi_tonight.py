@@ -115,3 +115,32 @@ def test_craft_B_free_mask(tmp_path):
                 log=lambda s: None)
     d = r["delta"].flatten(1).abs().amax(1)
     assert (d[~free] == 0).all() and (d[free] > 0).all() and (d <= 8 / 255 + 1e-7).all()
+
+
+def test_robust_reverse_direction_from_chosen_folder(tmp_path, monkeypatch):
+    """DeiT-crafted poisons (exported from <job>/chosen) -> Bobs of the other architecture (ResNet at lr 0.05)."""
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    monkeypatch.setattr(phi_robust, "DEIT", "tinycnn_gn")        # stand-in for DeiT-tiny
+    monkeypatch.setattr(phi_robust, "RESNET", "tinysmooth_gn")   # stand-in for ResNet18-GN-SiLU
+    job = tmp_path / "deit_auto_s4"
+    sets = ["arch=tinycnn_gn", "epochs=3", "n_keys=10", "per_key=2", "steps=2", "restarts=1", "eps=8", "pick=target",
+            "k0s=2", "lr=0.25"]
+    run = _run(job, "lr0.25", 4, sets, data_f)
+    (job / "chosen").symlink_to("lr0.25")
+    shared = tmp_path / "shared" / job.name
+    phi_robust.main(argparse.Namespace(export=True, run=str((job / "chosen").resolve()), to=str(shared)))
+    assert json.loads((shared / "done").read_text())["ladder_is_gm"] == []  # no ladder yet: no k0 exported
+    # with one ladder history the export falls back to the GM poisons for it
+    (run / "e2" / "k2" / "recenter_gm").mkdir(parents=True)
+    (run / "e2" / "k2" / "recenter_gm" / "history.json").write_text(json.dumps({"accepted": []}))
+    phi_robust.main(argparse.Namespace(export=True, run=str((job / "chosen").resolve()), to=str(shared)))
+    assert json.loads((shared / "done").read_text()) ["ladder_is_gm"] == [2]
+    out = tmp_path / "robust_deit"
+    phi_robust.main(argparse.Namespace(export=False, src=str(shared), out=str(out), variants="shuffle,arch,both",
+                                       lr_file=None, data=str(data_f)))
+    res = json.loads((out / "results.json").read_text())
+    assert res["shuffle"]["spec"] == {"arch": "tinycnn_gn", "order_seed": 1004, "init_seed": 4, "lr": 0.25}
+    assert res["arch"]["spec"] == {"arch": "tinysmooth_gn", "order_seed": 4, "init_seed": 4, "lr": 0.05}
+    assert res["both"]["spec"]["arch"] == "tinysmooth_gn" and res["both"]["spec"]["order_seed"] == 1004
+    assert res["done"]

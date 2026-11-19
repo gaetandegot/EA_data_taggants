@@ -212,9 +212,8 @@ function selectTable(runs) {
     <p class="small">Score: best first-order decrease of the linearised key loss within the eps ball, per image (adjoint along Alice, k0 = 32). "selected" = top images by that score; "aligned" = top by the cosine between the image's clean gradient and the adjoint direction; "gainnorm" = top by score / gradient norm. The same optimiser (problem B) is run on each set; real Bob with that set as the last batch.</p>`;
 }
 
-function robustTable(runs) {
+function robustTable(runs, vname) {
   const c = x => x ? `${f3(x.ce)} (${x.hits}/${x.n})` : "-";
-  const vname = { shuffle: "shuffled order (ResNet)", arch: "DeiT-tiny Bob", both: "DeiT-tiny + shuffled" };
   const k0s = [32, 28, 24];
   const rows = ["shuffle", "arch", "both"].flatMap(v => k0s.map((k, i) => `<tr>${i === 0 ? `<td rowspan="3">${vname[v]}</td>` : ""}<td>k0 = ${k}</td>${runs.map(r => {
     const rv = r.robust && r.robust[v], row = rv && rv.k0[String(k)];
@@ -255,7 +254,9 @@ function seedsTable(machines) {
   const deit2 = all.filter(r => r.preset === "deit_auto" || r.preset === "deit_auto_decide");
   if (deit2.length) html += `<h2>Hard same-label, DeiT-tiny at the searched lr (${[...new Set(deit2.map(r => r.lr).filter(x => x != null))].join(", ") || "search running"}): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(deit2)}`;
   const rob = all.filter(r => r.preset === "robust");
-  if (rob.length) html += `<h2>Robustness: Bob retrained from scratch</h2>${robustTable(rob)}`;
+  if (rob.length) html += `<h2>Robustness of ResNet-crafted poisons: Bob retrained from scratch</h2>${robustTable(rob, { shuffle: "ResNet, shuffled order", arch: "DeiT-tiny Bob", both: "DeiT-tiny + shuffled" })}`;
+  const robd = all.filter(r => r.preset === "robust_deit");
+  if (robd.length) html += `<h2>Robustness of DeiT-crafted poisons: Bob retrained from scratch</h2>${robustTable(robd, { shuffle: "DeiT-tiny, shuffled order", arch: "ResNet Bob", both: "ResNet + shuffled" })}`;
   const bud = all.filter(r => r.preset === "budget");
   if (bud.length) html += `<h2>Data budget per key: GM vs 4-iteration ladder (DeiT-tiny, k0 = 28)</h2>${budgetTable(bud)}`;
   return html;

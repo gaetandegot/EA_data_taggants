@@ -2,8 +2,9 @@
 
 Variants (the poisons replace the clean images of the poison batch, the last batch of every epoch, from k0 on):
   shuffle  same architecture and initialisation as Alice, another data order (order seed + 1000)
-  arch     DeiT-tiny (learning rate from the shared choice file, keysel.phi_lr_choice), Alice's data order
-  both     DeiT-tiny and the other data order
+  arch     the other architecture, Alice's data order: DeiT-tiny for ResNet-crafted poisons (learning rate from the
+           shared choice file, keysel.phi_lr_choice), ResNet18-GN-SiLU at lr 0.05 for DeiT-crafted poisons
+  both     the other architecture and the other data order
 For every variant: one clean training from scratch, checkpointed at the start of every k0 (shared prefix), whose
 clean end is the reference; then, from each checkpoint, the GM poisons and the final ladder poisons of that k0.
 
@@ -27,6 +28,7 @@ from .phi_dyn import keys_report
 from .phi_transport import Replay
 
 DEIT = "deit_tiny_cifar"
+RESNET, RESNET_LR = "resnet18_gn_silu", 0.05  # the other architecture for DeiT-crafted poisons (Alice's ResNet recipe)
 
 
 def export(run, to):
@@ -50,13 +52,16 @@ def export(run, to):
 
 
 def variant_spec(name, cfg, deit_lr):
+    """shuffle: the poisons' own architecture, another data order; arch / both: the OTHER architecture (DeiT-tiny for
+    ResNet-crafted poisons, ResNet18-GN-SiLU for DeiT-crafted ones), Alice's / another data order."""
     seed = cfg["seed"]
+    other, other_lr = (RESNET, RESNET_LR) if cfg["arch"] == DEIT else (DEIT, deit_lr)
     if name == "shuffle":
         return {"arch": cfg["arch"], "order_seed": seed + 1000, "init_seed": seed, "lr": cfg["lr"]}
     if name == "arch":
-        return {"arch": DEIT, "order_seed": seed, "init_seed": seed, "lr": deit_lr}
+        return {"arch": other, "order_seed": seed, "init_seed": seed, "lr": other_lr}
     if name == "both":
-        return {"arch": DEIT, "order_seed": seed + 1000, "init_seed": seed, "lr": deit_lr}
+        return {"arch": other, "order_seed": seed + 1000, "init_seed": seed, "lr": other_lr}
     raise ValueError(name)
 
 

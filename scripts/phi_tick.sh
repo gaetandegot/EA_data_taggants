@@ -3,7 +3,7 @@
 #   ssh <machine> bash ~/EA/EA_data_taggants/scripts/phi_tick.sh
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
 #   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit | deit_auto | deit_auto_decide | export
-#                                  | robust | budget
+#                                  | robust | robust_deit | budget
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
 # >= 30 min left, GPU unused or >= 13 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
 # preset's settings; then prints the state as ONE JSON line (scripts/phi_status.py --chain).
@@ -47,6 +47,7 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
       deit_auto_decide) job=deit_auto set="" decide=1 ;;
       export) job=export set="" ;;
       robust) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_s$SEED" ;;
+      robust_deit) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_deit_auto_s$SEED" ;;
       budget) job=budget set="" ;;
       *) echo "error: unknown preset $PRESET in $pointer" >&2; exit 1 ;;
     esac
