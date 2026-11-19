@@ -34,8 +34,10 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
   read -r wstate _ wleft <<< "$(/usr/bin/python3 "$repo/scripts/gpu_window.py" status)"
   fails=$(cat "$R/state/failures" 2>/dev/null || echo 0)
   read -r mem free <<< "$(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ',')"
-  # GPU usable: (almost) unused, or shared with another job but >= 13 GB free (our peak was ~10-12 GB)
-  gpu_ok=0; { [ "${mem:-99999}" -lt 2000 ] || [ "${free:-0}" -ge 13312 ]; } && gpu_ok=1
+  # GPU usable: (almost) unused, or shared with another job but >= 13 GB free (our peak was ~10-12 GB);
+  # per-machine override in MiB: ~/.config/data-taggants/share_min_mib.<host>
+  share_min=$(cat "$HOME/.config/data-taggants/share_min_mib.$(hostname -s)" 2>/dev/null || echo 13312)
+  gpu_ok=0; { [ "${mem:-99999}" -lt 2000 ] || [ "${free:-0}" -ge "$share_min" ]; } && gpu_ok=1
   if [ "$wstate" = open ] && [ "$wleft" -ge 1800 ] && [ "$fails" -lt 8 ] && [ $gpu_ok = 1 ]; then
     case $PRESET in
       labelfree) job=seed set="" ;;
