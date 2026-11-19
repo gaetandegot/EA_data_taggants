@@ -12,7 +12,8 @@
 # Only runs inside the GPU window: each command is hard-killed MARGIN_MIN before the window ends and the queue then
 # waits for the next window. Exits non-zero on a crash (state/failures is incremented; the phi tick relaunches).
 # When the job is finished, starts the next job registered for this machine (scripts/phi_tick.sh).
-# Env: SEED (required), R, JOB, SET, KS="32 28 24", ITERS=4, MARGIN_MIN=10, LRS, DECIDE, SRC, BUDGETS, LADDER_BUDGETS.
+# Env: SEED (required), R, JOB, SET, KS="32 28 24", ITERS=4, MARGIN_MIN=10, LRS, DECIDE, SRC, VARIANTS (robust),
+#      BUDGETS, LADDER_BUDGETS.
 set -u
 SEED=${SEED:?SEED is required}
 R=${R:-/Data/gaetan.degot/checkpoints/phi10_silu_s$SEED}
@@ -133,10 +134,11 @@ case $JOB in
 
   robust)
     SRC=${SRC:?SRC (exported poisons folder) is required}
-    wait_file "$SRC/done" "exported poisons"
+    [ -n "${POISONS:-}" ] || wait_file "$SRC/done" "exported poisons"   # POISONS: a file of the run folder SRC
     wait_file "$LRFILE" "DeiT learning rate"
     while [ ! -f "$R/state/robust.done" ]; do
       run robust "$R/robust.log" "$PY" -m keysel.phi_robust --src "$SRC" --out "$R" --lr-file "$LRFILE" \
+        --variants "${VARIANTS:-shuffle,arch,both}" ${POISONS:+--poisons "$POISONS"} \
         && touch "$R/state/robust.done"
     done
     finish ;;

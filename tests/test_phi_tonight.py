@@ -55,7 +55,7 @@ def test_robust_export_and_run(tmp_path):
     phi_robust.DEIT = "tinycnn_gn"  # stand-in for DeiT-tiny on CPU
     out = tmp_path / "robust"
     args = argparse.Namespace(export=False, src=str(shared), out=str(out), variants="shuffle,arch,both",
-                              lr_file=str(lr_f), data=str(data_f))
+                              lr_file=str(lr_f), data=str(data_f), poisons=None)
     phi_robust.main(args)
     res = json.loads((out / "results.json").read_text())
     assert res["done"] and set(res) >= {"shuffle", "arch", "both"}
@@ -144,3 +144,50 @@ def test_robust_reverse_direction_from_chosen_folder(tmp_path, monkeypatch):
     assert res["arch"]["spec"] == {"arch": "tinysmooth_gn", "order_seed": 4, "init_seed": 4, "lr": 0.05}
     assert res["both"]["spec"]["arch"] == "tinysmooth_gn" and res["both"]["spec"]["order_seed"] == 1004
     assert res["done"]
+
+
+def test_robust_spread_placement(tmp_path):
+    """shuffle_spread: GM only, from k0 and epoch 0, plain shuffle (no poison batch); with the clean images as
+    'poisons', the run from epoch 0 must reproduce the clean spread training exactly."""
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=3", "steps=2", "restarts=1", "eps=8",
+            "pick=target", "k0s=2"]
+    run = _run(tmp_path, "hard", 6, sets, data_f)
+    P = torch.load(run / "poisons.pt", weights_only=False)
+    Xtr = torch.load(data_f, weights_only=False)[0]
+    Xc = Xtr[P["idx"]].float() / 255 if Xtr.dtype == torch.uint8 else Xtr[P["idx"]].clone()
+    for name, X in (("gm", P["X_signed"]), ("noop", Xc)):
+        d = tmp_path / f"src_{name}"
+        d.mkdir()
+        (d / "config.json").write_text((run / "config.json").read_text())
+        torch.save({**P, "X_signed": X}, d / "poisons.pt")
+        torch.save({"X_signed": X}, d / "ladder_k2.pt")
+        (d / "done").write_text(json.dumps({"k0s": [2], "ladder_is_gm": []}))
+    res = {}
+    for name in ("gm", "noop"):
+        out = tmp_path / f"spread_{name}"
+        phi_robust.main(argparse.Namespace(export=False, src=str(tmp_path / f"src_{name}"), out=str(out),
+                                           variants="shuffle_spread", lr_file=None, data=str(data_f), poisons=None))
+        res[name] = json.loads((out / "results.json").read_text())["shuffle_spread"]
+    r = res["gm"]
+    assert r["spec"]["placement"] == "spread" and r["spec"]["order_seed"] == 1006
+    assert set(r["k0"]) == {"0", "2"} and all(set(row) == {"gm"} for row in r["k0"].values())
+    noop = res["noop"]
+    assert noop["k0"]["0"]["gm"]["ce"] == noop["clean"]["ce"]  # clean images in place = the clean training
+    assert r["k0"]["0"]["gm"]["ce"] != r["clean"]["ce"]
+
+
+def test_robust_gm_only_from_run_poisons_file(tmp_path):
+    """--poisons: a poisons file read directly from a local run folder (no export), GM only, both placements."""
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=3", "steps=2", "restarts=1", "eps=8", "k0s=2"]
+    run = _run(tmp_path, "lf", 6, sets, data_f)
+    out = tmp_path / "same"
+    phi_robust.main(argparse.Namespace(export=False, src=str(run), out=str(out), variants="shuffle,shuffle_spread",
+                                       lr_file=None, data=str(data_f), poisons="poisons.pt"))
+    res = json.loads((out / "results.json").read_text())
+    assert res["done"] and set(res["shuffle"]["k0"]) == {"2"} and set(res["shuffle_spread"]["k0"]) == {"0", "2"}
+    assert all(set(row) == {"gm"} for v in ("shuffle", "shuffle_spread") for row in res[v]["k0"].values())
+

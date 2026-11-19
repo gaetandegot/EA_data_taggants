@@ -3,7 +3,7 @@
 #   ssh <machine> bash ~/EA/EA_data_taggants/scripts/phi_tick.sh
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
 #   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit | deit_auto | deit_auto_decide | export
-#                                  | robust | robust_deit | budget
+#                                  | robust | robust_deit | robust_spread | robust_same | budget
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
 # >= 30 min left, GPU unused or >= 13 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
 # preset's settings; then prints the state as ONE JSON line (scripts/phi_status.py --chain).
@@ -50,11 +50,14 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
       export) job=export set="" ;;
       robust) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_s$SEED" ;;
       robust_deit) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_deit_auto_s$SEED" ;;
+      robust_spread) job=robust set="" src="$repo/outputs/phi_poisons/phi20_e8_same_s$SEED" variants=shuffle_spread ;;
+      robust_same) job=robust set="" src="/Data/gaetan.degot/checkpoints/phi10_silu_s$SEED" variants=shuffle,shuffle_spread \
+        poisons=ablation/poisons_same.pt ;;
       budget) job=budget set="" ;;
       *) echo "error: unknown preset $PRESET in $pointer" >&2; exit 1 ;;
     esac
     # whole subshell redirected: nothing may keep the caller's stdout (ssh channel / pipe) open
-    ( cd "$repo" && SEED=$SEED R=$R JOB=$job SET=$set DECIDE=${decide:-0} SRC=${src:-} \
+    ( cd "$repo" && SEED=$SEED R=$R JOB=$job SET=$set DECIDE=${decide:-0} SRC=${src:-} VARIANTS=${variants:-} POISONS=${poisons:-} \
         exec setsid nohup bash scripts/queue_phi_seed.sh ) \
       >> "$R/queue.log" 2>&1 < /dev/null &
     echo "$(date -Is) relaunch by phi_tick ($PRESET, queue was not running)" >> "$R/state/events.log"

@@ -223,6 +223,18 @@ function robustTable(runs, vname) {
     <p class="small">Bob retrained from scratch (not Alice): key CE (hits) with the hard-setting GM start poisons vs the final ladder poisons of that k0, and without poisons (clean).</p>`;
 }
 
+function spreadTable(runs, rob, note) {
+  const c = x => x ? `${f3(x.ce)} (${x.hits}/${x.n})` : "-";
+  const rows = [0, 32, 28, 24].map(k => `<tr><td>${k === 0 ? "whole training (from epoch 0)" : `k0 = ${k}`}</td>${runs.map(r => {
+    const sp = r.robust && r.robust.shuffle_spread, last = rob ? rob.find(x => x.seed === r.seed) : r;
+    const lr = last && last.robust && last.robust.shuffle && last.robust.shuffle.k0[String(k)];
+    return `<td class="num">${k === 0 ? "-" : c(lr && lr.gm)}</td><td class="num">${c(sp && sp.k0[String(k)] && sp.k0[String(k)].gm)}</td>`;
+  }).join("")}</tr>`).join("");
+  const clean = runs.map(r => { const sp = r.robust && r.robust.shuffle_spread; return `seed ${esc(r.seed)}: ${c(sp && sp.clean)}`; }).join(", ");
+  return `<div class="tablewrap"><table><tr><th>poisoned from</th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: GM last batch</th><th class="num">GM spread</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">${note || "ResNet Bob retrained from scratch with another data order, hard-setting GM poisons: in the last batch of every epoch (robustness run) vs replacing their clean images wherever the shuffle puts them."} Clean spread Bob: ${clean}.</p>`;
+}
+
 function budgetTable(runs) {
   const r = runs[0], b = r && r.budget;
   if (!b) return "";
@@ -257,6 +269,10 @@ function seedsTable(machines) {
   if (rob.length) html += `<h2>Robustness of ResNet-crafted poisons: Bob retrained from scratch</h2>${robustTable(rob, { shuffle: "ResNet, shuffled order", arch: "DeiT-tiny Bob", both: "DeiT-tiny + shuffled" })}`;
   const robd = all.filter(r => r.preset === "robust_deit");
   if (robd.length) html += `<h2>Robustness of DeiT-crafted poisons: Bob retrained from scratch</h2>${robustTable(robd, { shuffle: "DeiT-tiny, shuffled order", arch: "ResNet Bob", both: "ResNet + shuffled" })}`;
+  const spr = all.filter(r => r.preset === "robust_spread");
+  if (spr.length) html += `<h2>Are concentrated poisons the problem? GM poisons in the last batch vs spread over the epoch (shuffled ResNet Bob)</h2>${spreadTable(spr, rob)}`;
+  const same = all.filter(r => r.preset === "robust_same");
+  if (same.length) html += `<h2>Easy setting (10 keys x 50, eps 16): does same-label GM transfer at all? Last batch vs spread (shuffled ResNet Bob)</h2>${spreadTable(same, null, "ResNet Bob retrained from scratch with another data order, the label-free run's same-label GM poisons (in Alice's own trajectory: 9-10/10 hits at k0 = 32).")}`;
   const bud = all.filter(r => r.preset === "budget");
   if (bud.length) html += `<h2>Data budget per key: GM vs 4-iteration ladder (DeiT-tiny, k0 = 28)</h2>${budgetTable(bud)}`;
   return html;

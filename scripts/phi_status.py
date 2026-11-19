@@ -130,6 +130,8 @@ PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label,
            "deit_auto_decide": "DeiT-tiny, same-label, 20 keys x 25, eps 8, lr search (decides)",
            "export": "export poisons to the shared folder", "robust": "robustness of ResNet poisons: shuffle / DeiT / both",
            "robust_deit": "robustness of DeiT poisons: shuffle / ResNet / both",
+           "robust_spread": "robustness, poisons spread over the epoch (shuffled Bob, GM, from k0 and epoch 0)",
+           "robust_same": "label-free run's same-label GM poisons, shuffled Bob: last batch vs spread",
            "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
 
 
@@ -175,16 +177,23 @@ def deit_auto_stages(r):
     return [search] + stages, remaining, ab, cfg, ch.resolve()
 
 
-def robust_stages(r):
+def robust_stages(r, preset="robust"):
     res = jload(r / "results.json") or {}
-    vs = [v for v in ("shuffle", "arch", "both")]
     k0s = res.get("k0s", [32, 28, 24])
-    total = len(vs) * (1 + 2 * len(k0s))
+    if preset == "robust_spread":  # GM only, from each k0 and from epoch 0
+        vs, total = ["shuffle_spread"], 1 + len(set(k0s) | {0})
+        what = f"clean + GM spread from {len(set(k0s) | {0})} starts"
+    elif preset == "robust_same":
+        vs, total = ["shuffle", "shuffle_spread"], 2 + len(k0s) + len(set(k0s) | {0})
+        what = "GM last batch / spread, clean + each start"
+    else:
+        vs, total = ["shuffle", "arch", "both"], 3 * (1 + 2 * len(k0s))
+        what = f"3 variants x (clean + GM/ladder at {len(k0s)} k0)"
     n = sum(("clean" in res.get(v, {})) + sum(len(row) for row in res.get(v, {}).get("k0", {}).values()) for v in vs)
     done = (r / "state" / "all.done").exists()
     return [{"name": "robust", "done": done, "count": n, "total": total,
-             "text": f"{n}/{total} trainings from scratch (3 variants x (clean + GM/ladder at {len(k0s)} k0))",
-             "updated": iso(mtime(r / "robust.log"))}], 0 if done else 130 * (1 - n / total), res
+             "text": f"{n}/{total} trainings from scratch ({what})",
+             "updated": iso(mtime(r / "robust.log"))}], 0 if done else {"robust_spread": 60, "robust_same": 75}.get(preset, 130) * (1 - n / total), res
 
 
 def budget_stages(r):
@@ -289,12 +298,12 @@ def summary(seed, r, preset, done):
         return out
     if preset == "export":
         return out
-    if preset in ("robust", "robust_deit"):
-        res = robust_stages(r)[2]
+    if preset in ("robust", "robust_deit", "robust_spread", "robust_same"):
+        res = robust_stages(r, preset)[2]
         rep = lambda x: {"ce": x["ce"], "hits": sum(x["hit"]), "n": len(x["hit"])}  # noqa: E731
         out["robust"] = {v: {"spec": res[v].get("spec"), "clean": rep(res[v]["clean"]) if "clean" in res[v] else None,
                              "k0": {k: {n: rep(x) for n, x in row.items()} for k, row in res[v].get("k0", {}).items()}}
-                         for v in ("shuffle", "arch", "both") if v in res}
+                         for v in ("shuffle", "arch", "both", "shuffle_spread") if v in res}
         return out
     if preset == "budget":
         stages, _, res, cfg = budget_stages(r)
@@ -332,8 +341,8 @@ def status(r, relaunched, preset="labelfree"):
         stages, remaining, ab, cfg = [{"name": "export", "done": all_done, "count": int(all_done), "total": 1,
                                        "text": "poisons copied to the shared folder" if all_done else "pending",
                                        "updated": None}], 0, {}, jload(r / "config.json") or {}
-    elif preset in ("robust", "robust_deit"):
-        stages, remaining, _ = robust_stages(r)
+    elif preset in ("robust", "robust_deit", "robust_spread", "robust_same"):
+        stages, remaining, _ = robust_stages(r, preset)
         ab, cfg = {}, {}
         all_done = (st / "all.done").exists()
     elif preset == "budget":
