@@ -73,4 +73,10 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
     sleep 2
   fi
 fi
+# copy this machine's logs / JSON results to the shared outputs/phi_results/<host> (at most every 20 min, detached)
+stamp="$HOME/.config/data-taggants/collected.$(hostname -s)"
+if [ -z "$(find "$stamp" -mmin -20 2>/dev/null)" ]; then
+  touch "$stamp"
+  ( exec setsid nohup bash "$repo/scripts/collect_phi_logs.sh" ) > /dev/null 2>&1 < /dev/null &
+fi
 exec /usr/bin/python3 "$repo/scripts/phi_status.py" --chain "$pointer" $relaunched

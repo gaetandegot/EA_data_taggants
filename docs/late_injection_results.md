@@ -22,9 +22,18 @@ Plan and theory: `docs/late_injection_statement_of_purpose.md`. Run folder: `/Da
     at or below same-label GM in all 9. The label, not the poisons' position in the epoch, is what GM relies on.
 13. **The seed-0 Alices were under-fitted** (train loss 0.75 / 2.09 vs 0.19–0.25 for the new seeds), probably because of
     their 4-class poison batch; earlier seed-0 conclusions describe that regime.
-14. **Hard same-label setting (20 keys × 25, ε = 8, §11.2):** GM no longer saturates (0–6/20 hits) and the ladder takes
-    seed 1 to 20/20 at $k_0 = 28$ and 24. DeiT-tiny at lr 0.05 under-fits; re-run with a searched learning rate pending.
+14. **Hard same-label setting (20 keys × 25, ε = 8, §11.2):** GM no longer saturates (0–6/20 hits). On 3 seeds × 3
+    start epochs, 4 ladder iterations improve every cell (e.g. seed 1: 3 → 20/20 at $k_0 = 28$; seeds 2–3 reach 17–18/20
+    at $k_0 = 24$). Same picture on DeiT-tiny (§11.3), which stays under-fitted with plain SGD at every learning rate tried.
 15. Adjoint-based selection of the poison images does not help (§11.4).
+16. **Robustness (§11.6): the white-box gains mostly do not survive retraining.** In the hard setting, a Bob retrained
+    from scratch with another data order keeps 0–3/20 hits for ResNet poisons (GM and ladder alike) and 0–9/20 for DeiT
+    poisons; changing Bob's architecture (ResNet ↔ DeiT) removes the effect completely. In the easy label-free setting,
+    same-label GM transfers to a shuffled Bob almost intact (7–10/10), while the label-free ladder poisons keep only 2–3/10.
+    Concentrating the poisons in the last batch is not the cause: spreading them over the epoch gives the same result.
+17. **Data budget (§11.7, DeiT-tiny, ε = 16, $k_0 = 28$, white-box):** the ladder reaches 2/10 hits with 15 images per key,
+    GM needs 30; matched on key CE, the ladder needs about half of GM's budget. The ladders stop because the first-order
+    gain vanishes (§11.7), not because the linear model is wrong.
 
 ## 1. Where does the clean dynamics stop amplifying?
 
@@ -415,8 +424,12 @@ The two hot operations are the HVP (adjoint pass, 98 per epoch) and the crafting
 ## 11. Multi-seed experiments (2026-11-17 to 19, SiLU, `keysel/run_phi_seed.py`)
 
 Three new seeds (1, 2, 3; the seed sets the keys, poison images, data order and Alice's initialisation), plain SGD as
-before, 4 iterations of the re-centred ladder from GM (2 restarts) at $k_0 = 32, 28, 24$. Raw tables:
-`outputs/phi_analysis/summary.json` (`outputs/phi_analysis/extract.py` on the collected logs). Values are key CE (hits).
+before, 4 iterations of the re-centred ladder from GM (2 restarts) at $k_0 = 32, 28, 24$. Values are key CE (hits).
+
+**Where the results are.** Every machine's logs and JSON results (no `.pt`) are copied to the shared
+`outputs/phi_results/<host>/<run>/` by `scripts/collect_phi_logs.sh`, which the job tick runs every 20 min. Tables:
+`outputs/phi_analysis/extract.py` → `summary.json` (§11.1–11.2, label-free and hard ResNet) and
+`outputs/phi_analysis/extract_late.py` → `summary_late.json` (§11.2–11.7: hard ResNet and DeiT, robustness, budget).
 
 **Seed 0 was an under-fitted Alice.** With the same recipe, the seed-0 SiLU Alice ends at train loss 0.75 (ReLU: 2.09,
 test accuracy 0.047 at epoch 20), the new seeds at 0.19–0.25. Seed 0's last batch held the 400 poison positions from only
@@ -451,29 +464,38 @@ conclusions on seed 0 (§1–§9) were obtained on an under-fitted model.
 
 ### 11.2 Hard same-label setting (20 keys × 25 images, ε = 8/255), ResNet18-GN-SiLU
 
-| seed · $k_0$ | GM start | ladder | iterations |
+Complete (4 ladder iterations everywhere). Key CE (hits out of 20):
+
+| seed | $k_0 = 32$: GM → ladder | $k_0 = 28$: GM → ladder | $k_0 = 24$: GM → ladder |
 |---|---|---|---|
-| 1 · 32 | 4.67 (1/20) | 2.11 (11/20) | 4 |
-| 1 · 28 | 3.29 (3/20) | 0.65 (20/20) | 4 |
-| 1 · 24 | 2.64 (6/20) | 0.26 (20/20) | 4 |
-| 2 · 32 / 28 / 24 | 5.74 (0) / 4.68 (3) / 4.17 (3) | 3.37 (4) / 3.07 (3) / 2.24 (9) | 4 / 2 / 2 |
-| 3 · 32 / 28 / 24 | 5.46 (1) / 4.29 (2) / 3.60 (6) | 3.02 (4) / 1.64 (14) / 1.67 (14) | 4 / 4 / 2 |
+| 1 | 4.67 (1) → **2.11 (11)** | 3.29 (3) → **0.65 (20)** | 2.64 (6) → **0.26 (20)** |
+| 2 | 5.74 (0) → **3.37 (4)** | 4.68 (3) → **1.85 (12)** | 4.17 (3) → **1.10 (17)** |
+| 3 | 5.46 (1) → **3.02 (4)** | 4.29 (2) → **1.64 (14)** | 3.60 (6) → **0.82 (18)** |
 
 - GM no longer saturates (0–6/20 hits; crafting cosine 0.61 vs ~0.8 at 50 images and ε = 16), and the ladder improves
-  it strongly (seed 1: 3 → 20/20 at $k_0=28$, 6 → 20/20 at $k_0=24$). Seeds 2 and 3 are still running (2026-11-19).
+  every cell, by 2.3–3.0 nats of key CE. No ladder stopped early, and the last iterations still gained 0.3–0.6 nats,
+  so 4 iterations is a budget, not convergence.
 - The hard Alices (last batch = 20 target classes × 25) fit as well as the label-free ones (train loss 0.20–0.25).
 
-### 11.3 DeiT-tiny (CIFAR version: patch 4, 192 dims, 12 blocks, non-fused attention), hard setting, lr 0.05
+### 11.3 DeiT-tiny (CIFAR version: patch 4, 192 dims, 12 blocks, non-fused attention), hard setting, lr 0.1
 
-| seed · $k_0$ | GM start | ladder |
-|---|---|---|
-| 1 · 32 / 28 / 24 | 5.32 (0) / 4.39 (0) / 3.83 (2) | 4.29 (1, stopped after 3) / 2.71 (7) / 2.02 (13/20) |
-| 2 · 32 / 28 / 24 | 5.35 (1) / 4.30 (2) / 3.71 (2) | 3.40 (5) / 2.35 (11) / 1.55 (16/20) |
+**Learning rate.** Plain SGD on DeiT-tiny under-fits at every learning rate tried (seed 3, 40 epochs, batch 512, cosine;
+final train loss / test accuracy): lr 0.05 ≈ 1.9 / 0.36, **0.1: 1.78 / 0.379**, 0.25: 2.05 / 0.371, 0.5: 2.71 / 0.289
+(`keysel/phi_lr_choice.py`, `outputs/deit_lr_choice.json`). The target (train loss ≤ 0.5) was not reached; lr 0.1 has
+the lowest loss and is used for all DeiT runs below (DeiT Bob in §11.6, budget in §11.7). The bottleneck is plain SGD on
+a ViT, not the step size; momentum or Adam would change the linearization. **The DeiT results describe an under-fitted
+regime** (train loss 1.78–1.83, test accuracy 0.37–0.38 on all three seeds).
 
-Alice under-fits (train loss 1.86–1.92, test accuracy 0.36; the loss falls almost linearly with the epochs): plain SGD
-at lr 0.05 is the momentum-free equivalent of momentum-SGD at 0.005, small for a ViT trained from scratch. The ladder
-still helps, but this cannot be attributed to the architecture. Re-run with a searched learning rate (candidates 0.1,
-0.25, 0.5; smallest stable one with final train loss ≤ 0.5; `keysel/phi_lr_choice.py`) scheduled for 2026-11-19.
+| seed | $k_0 = 32$: GM → ladder | $k_0 = 28$: GM → ladder | $k_0 = 24$: GM → ladder |
+|---|---|---|---|
+| 1 | 5.53 (0) → 4.29 (0)* | 4.40 (0) → **2.60 (9)** | 3.79 (2) → **1.73 (18)** |
+| 2 | 5.78 (0) → 3.68 (3) | 4.67 (1) → **2.42 (8)** | 3.98 (1) → **1.76 (13)** |
+| 3 | 5.74 (0) → 4.39 (2)* | 4.58 (0) → **2.83 (6)** | 3.89 (2) → **1.91 (14)** |
+
+\*stopped after 3 iterations by the former stop rule (real gain below 0.02), since removed.
+
+- The ladder works on DeiT as on ResNet: GM gets 0–2/20, 4 ladder iterations reach 6–9/20 at $k_0 = 28$ and 13–18/20 at
+  $k_0 = 24$. Starting from similar GM values, DeiT ends higher than ResNet (e.g. $k_0=24$: 1.7–1.9 vs 0.3–1.1).
 
 ### 11.4 Adjoint-based image selection (seed 1, $k_0=32$, `keysel/phi_select.py`): negative
 
@@ -507,10 +529,112 @@ perturbation. First-order adjoint scores do not rediscover the label mechanism: 
   on cuboide (their job grew to 9.3 GB, ours used 10–12 GB even with the chunked HVP): the start threshold is now 13 GB
   free.
 
+### 11.6 Robustness: Bob retrained from scratch (`keysel/phi_robust.py`, 2026-11-19 to 21)
+
+Everything above is white-box: Bob replays Alice's own run (same initialisation, same data order) up to $k_0$. Here the
+poisons crafted in §11.1–11.3 are fixed, and Bob is trained from scratch for 40 epochs with the poisons placed in the last
+batch of every epoch from $k_0$ on: **shuffle** = same architecture and initialisation, another data order; **arch** =
+the other architecture (DeiT-tiny lr 0.1 for ResNet poisons, ResNet18-GN-SiLU lr 0.05 for DeiT poisons); **both** =
+other architecture and other order. "clean" = the same Bob without poisons. Key CE (hits).
+
+**Hard setting (20 keys × 25, ε = 8), shuffled Bob, GM / ladder poisons:**
+
+| poisons · seed | clean | $k_0 = 32$ | $k_0 = 28$ | $k_0 = 24$ | white-box ladder at $k_0=24$ (§11.2–11.3) |
+|---|---|---|---|---|---|
+| ResNet · 1 | 7.13 | 5.50 (0) / 5.50 (0) | 4.81 (2) / 4.72 (1) | 4.45 (2) / 4.16 (2) | 0.26 (20) |
+| ResNet · 2 | 8.62 | 6.90 (0) / 7.07 (0) | 6.27 (0) / 6.38 (0) | 6.01 (0) / 6.02 (0) | 1.10 (17) |
+| ResNet · 3 | 9.05 | 7.27 (0) / 7.51 (0) | 6.53 (0) / 6.63 (0) | 6.23 (0) / 6.19 (0) | 0.82 (18) |
+| DeiT · 1 | 7.91 | 5.29 (0) / 4.84 (1) | 4.27 (2) / 3.39 (1) | 3.75 (3) / **2.63 (9)** | 1.73 (18) |
+| DeiT · 2 | 8.31 | 6.48 (0) / 5.68 (1) | 5.35 (1) / 4.71 (1) | 4.66 (1) / 4.15 (1) | 1.76 (13) |
+| DeiT · 3 | 7.58 | 6.55 (0) / 6.51 (0) | 5.96 (0) / 6.04 (0) | 5.52 (0) / 5.70 (0) | 1.91 (14) |
+
+- With another data order, the poisons still lower the key CE by 1.5–3.5 nats below clean, but hits mostly vanish
+  (0–3/20, one exception at 9/20). The white-box hits (13–20/20 at $k_0 = 24$) do not transfer.
+- **ResNet poisons: the ladder brings nothing over GM after shuffling** (within ±0.3 nats, as often worse as better).
+  **DeiT poisons: the ladder keeps part of its gain** on seeds 1 and 2 (0.4–1.1 nats below GM), not on seed 3.
+- **Other architecture (arch, both): no effect at all.** Every cell is within 0.1 nats of its clean Bob with 0/20 hits,
+  for both poison families, GM and ladder alike (clean 7.1–9.0); the ladder poisons are 0.02–0.07 nats *worse* than GM.
+
+**Is it the placement or the label? (seed 3, shuffled ResNet Bob).** "last" = poisons in the last batch from $k_0$ on (as
+above); "spread" = poisons at their own positions of the shuffled order, perturbed from $k_0$ on ("from 0" = over the
+whole training).
+
+| poisons | clean | $k_0 = 32$ | $k_0 = 28$ | $k_0 = 24$ | from 0 | white-box $k_0 = 32/28/24$ |
+|---|---|---|---|---|---|---|
+| hard GM (20 × 25, ε 8), last | 9.05 | 7.27 (0/20) | 6.53 (0) | 6.23 (0) | | 5.46 (1) / 4.29 (2) / 3.60 (6) |
+| hard GM, spread | 9.21 | 7.09 (0/20) | 6.57 (1) | 6.26 (1) | 5.91 (1) | |
+| easy, same-label GM (10 × 50, ε 16), last | 9.40 | **1.74 (7/10)** | **0.30 (10)** | **0.12 (10)** | | 0.87 (9) / 0.09 (10) / 0.03 (10) |
+| easy, same-label GM, spread | 9.03 | **1.07 (8/10)** | **0.19 (10)** | **0.075 (10)** | **0.014 (10)** | |
+| easy, label-free GM, last | 8.45 | 4.96 (1/10) | 4.52 (1) | 4.59 (1) | | 4.36 (1) / 3.81 (1) / 3.67 (2) |
+| easy, label-free ladder, last | 8.45 | 4.06 (2/10) | 3.23 (3) | 2.64 (3) | | 0.59 (10) / 0.05 (10) / 0.02 (10) |
+
+- **Placement is not the cause.** Spreading the poisons over the epoch instead of concentrating them in the last batch
+  changes the key CE by at most 0.7 nats in either setting, and poisoning the whole training (from epoch 0) instead of
+  the last 8–16 epochs lowers it by only 0.3–1.2 nats in the hard setting. Exposure length matters a little, position not at all.
+- **In the easy setting, same-label GM transfers almost intact** (7–10/10, key CE within ~1 nat of white-box), so the
+  retraining protocol itself does not destroy taggants.
+- **The label-free ladder poisons transfer poorly** (2–3/10 vs 10/10 white-box), although they beat label-free GM
+  (1/10) and get 1–2 nats lower key CE. The ladder's white-box gain is mostly specific to Alice's data order; same-label
+  GM's gain comes from the label mechanism (§11.1), which does not depend on the order. Comparing label-free ladder with
+  same-label GM mixes two changes (label and optimiser); the clean comparison is label-free GM vs label-free ladder.
+
+### 11.7 Data budget per key (DeiT-tiny, ε = 16, $k_0 = 28$, white-box; `keysel/phi_budget.py`)
+
+10 keys × 50 same-label positions in the last batch, ε = 16/255, seed 1. At budget $b$ only the first $b$ images of each key
+are perturbed (GM on those images, recipe of §11.3); the other positions keep their clean images, so Alice, the data order
+and the keys are the same for every budget. Each ladder starts from the GM poisons of its own budget and may only move
+those $b$ images. Budgets 15–45 ran on other machines with the same config and seed; their Alices are bitwise identical
+(key CE 8.172 everywhere). Ladder: 3 radii per iteration ({r/2, r, 2r} after the first), and if none improves, two smaller
+radii (half and quarter of the smallest) before stopping. Bob replays Alice's order (white-box, as in §11.1–11.3).
+
+| images per key | GM: key CE (hits/10) | ladder: key CE (hits/10) | ladder iterations |
+|---|---|---|---|
+| 2 | 7.54 (0) | 7.21 (0) | 4 |
+| 5 | 6.76 (0) | 5.99 (0) | 3, stopped |
+| 10 | 5.68 (0) | 4.33 (0) | 3, stopped |
+| 15 | 4.88 (0) | **3.19 (2)** | 3, stopped |
+| 20 | 4.29 (1) | 2.27 (4) | 3, stopped |
+| 25 | 3.79 (1) | 1.64 (9) | 3, stopped |
+| 30 | **3.31 (2)** | 1.25 (9) | 4 |
+| 35 | 3.05 (3) | 1.02 (9) | 4 |
+| 40 | 2.72 (5) | **0.81 (10)** | 4 |
+| 45 | 2.41 (7) | 0.64 (10) | 4 |
+| 50 | 2.13 (7) | 0.51 (10) | 4 |
+
+(Alice's key CE 8.17; Alice train loss 1.78, the under-fitted regime of §11.3.)
+
+- **Smallest budget with 2/10 hits: 15 images per key with the ladder, 30 with GM.** At equal key CE the ladder needs
+  about half of GM's budget or less (ladder at 15 ≈ GM at 30; ladder at 20 ≈ GM at 50), and reaches 10/10 from 40 images.
+- The gain grows with the budget in absolute terms (0.3 nats at 2 images, 1.6–2.2 nats from 20 on).
+- White-box only: given §11.6, the budget advantage should not be expected to survive retraining.
+
+**Why the ladders stop.** In the stopped iterations every radius made the real key CE *worse*, down to ε/32. Fitting the
+two smallest radii as real ΔJ(r) = a·r + c·r² (r in units of ε; two points per fit, so exact and unvalidated):
+
+| budget | real ΔJ at ε/16, ε/32 | fitted slope a | predicted slope | curvature c | best achievable gain |
+|---|---|---|---|---|---|
+| 15 | +0.20, +0.04 | −0.70 | −0.69 / −0.79 | 63 | 0.002 |
+| 20 | +0.19, +0.03 | −0.99 | −1.12 / −1.13 | 65 | 0.004 |
+| 25 | +0.12, +0.002 | −1.74 | −0.91 / −1.25 | 58 | 0.013 |
+| 30 | +0.07, −0.02 (kept) | −2.48 | −1.90 / −2.14 | 58 | 0.026 |
+| 35 | −0.07, −0.09 (kept) | −4.70 | −4.28 / −4.49 | 57 | 0.097 |
+
+(Predicted slope = predicted ΔJ / r at ε/16 and ε/32. At budgets 5 and 10 the predicted slope itself is about zero or
+positive: no first-order gain left.)
+
+- **The linear model's slope is right** (within 10–20% at budgets 15–35, except 25), and the curvature is nearly the same
+  at every budget (c ≈ 57–65). The ladders stop where the remaining first-order gain is so small that the curvature
+  overtakes it beyond r ≈ a/c ≈ ε/100: these poisons are close to a first-order stationary point in the ε-ball for this
+  Bob. The curvature presumably comes from Bob's trajectory responding to the change of poisons over the 12 remaining
+  epochs (the linear model holds the Hessians along the trajectory fixed); not measured directly.
+- The smaller radii rescued the 4th iteration at budgets 2, 30 and 35 (ε/32 kept, gains 0.004–0.09), as the fit predicts.
+
 ## 12. Not done yet
 
-- Robustness: Bob retrained from scratch with a shuffled data order, as DeiT-tiny, and both (`keysel/phi_robust.py`,
-  hard ResNet poisons, GM vs ladder): scheduled 2026-11-19.
-- Data budget per key at $k_0=28$ (DeiT-tiny, 10 keys × up to 50 images): smallest budget reaching 2/10 hits for GM vs
-  the 4-iteration ladder (`keysel/phi_budget.py`): scheduled 2026-11-19.
+- Robustness in the easy label-free setting for all three Bob variants (shuffle / other architecture / both), with
+  label-free GM vs label-free ladder as the clean comparison (§11.6 only has the shuffle variant, seed 3).
+- Making the poisons robust to retraining (e.g. crafting against several Bobs with different data orders), since the
+  white-box gains of the ladder do not transfer (§11.6).
+- A properly fitted DeiT (more epochs, or momentum with an extended adjoint state); the DeiT results are for an
+  under-fitted regime (§11.3).
 - Larger trust radii (above ε/2) when starting far from the optimum.
