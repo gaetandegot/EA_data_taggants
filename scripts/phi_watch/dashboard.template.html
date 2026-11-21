@@ -235,10 +235,25 @@ function spreadTable(runs, rob, note) {
     <p class="small">${note || "ResNet Bob retrained from scratch with another data order, hard-setting GM poisons: in the last batch of every epoch (robustness run) vs replacing their clean images wherever the shuffle puts them."} Clean spread Bob: ${clean}.</p>`;
 }
 
+function lfTable(lf, same) {
+  // label-free run: in Alice's own trajectory (fixed reference numbers) vs a shuffled Bob retrained from scratch
+  const c = x => x ? `${f3(x.ce)} (${x.hits}/${x.n})` : "-";
+  const ref = { "3": { 32: ["4.36 (1)", "0.59 (10)", "0.87 (9)"], 28: ["3.81 (1)", "0.05 (10)", "0.09 (10)"], 24: ["3.67 (2)", "0.02 (10)", "0.03 (10)"] } };
+  const rows = lf.flatMap(r => [32, 28, 24].map((k, i) => {
+    const row = r.robust && r.robust.shuffle && r.robust.shuffle.k0[String(k)];
+    const s = same.find(x => x.seed === r.seed), srow = s && s.robust && s.robust.shuffle && s.robust.shuffle.k0[String(k)];
+    const a = (ref[String(r.seed)] || {})[k] || ["?", "?", "?"];
+    return `<tr>${i === 0 ? `<td rowspan="3">seed ${esc(r.seed)}</td>` : ""}<td>k0 = ${k}</td><td class="num small">${a[0]}</td><td class="num">${c(row && row.gm)}</td><td class="num small">${a[1]}</td><td class="num">${c(row && row.ladder)}</td><td class="num small">${a[2]}</td><td class="num">${c(srow && srow.gm)}</td></tr>`;
+  })).join("");
+  const clean = lf.map(r => `seed ${esc(r.seed)}: ${c(r.robust && r.robust.shuffle && r.robust.shuffle.clean)}`).join(", ");
+  return `<div class="tablewrap"><table><tr><th></th><th></th><th class="num">GM any-label: Alice</th><th class="num">shuffled Bob</th><th class="num">ladder: Alice</th><th class="num">shuffled Bob</th><th class="num">GM same-label, last: Alice</th><th class="num">shuffled Bob</th></tr>${rows}</table></div>
+    <p class="small">Label-free run (10 keys x 50, eps 16), poisons in the last batch. "Alice": real Bob in Alice's own trajectory (reference); "shuffled Bob": ResNet retrained from scratch with another data order. Clean shuffled Bob: ${clean}.</p>`;
+}
+
 function budgetTable(runs) {
   const r = runs.find(x => x.preset === "budget") || runs[0], b = r && r.budget;
   if (!b) return "";
-  const big = runs.find(x => x.preset === "budget100"), gb = (big && big.budget && big.budget.gm) || {};
+  const big = runs.find(x => x.preset === "budget100" && x !== r), gb = (big && big.budget && big.budget.gm) || {};
   const bs = [...new Set([...Object.keys(b.gm || {}), ...Object.keys(b.ladder || {}), ...Object.keys(gb)].map(Number))].sort((x, y) => x - y);
   const rows = bs.map(k => {
     const g1 = b.gm[String(k)], g2 = gb[String(k)], l = b.ladder[String(k)];
@@ -246,7 +261,33 @@ function budgetTable(runs) {
     return `<tr><td>${k}</td><td class="num">${gs || "-"}</td><td class="num">${l && l.ce != null ? `${f3(l.ce)} (${l.hits}/10), ${l.count}/4 it` : (l ? `${l.count}/4 it` : "not run")}</td></tr>`;
   }).join("");
   return `<div class="tablewrap"><table><tr><th>images per key</th><th class="num">GM: key CE (hits)</th><th class="num">ladder: key CE (hits)</th></tr>${rows}</table></div>
-    <p class="small">DeiT-tiny (lr ${esc(b.lr)}), 10 keys, same-label, eps 8, k0 = 28, seed ${esc(r.seed)}; positions beyond the budget keep their clean images. Budgets 75 and 100 come from a 10 x 100 run (new Alice, 1000 poison positions applied as one merged step with twice the learning rate). Alice's key CE: ${f3(b.alice)}. Threshold of interest: 2/10 hits.</p>`;
+    <p class="small">DeiT-tiny (lr ${esc(b.lr)}), 10 keys, same-label, eps ${esc(b.eps || 8)}, k0 = 28, seed ${esc(r.seed)}; positions beyond the budget keep their clean images; each ladder starts from the GM poisons of its budget.${big ? " Budgets 75 and 100 come from a 10 x 100 run (new Alice, 1000 poison positions applied as one merged step with twice the learning rate)." : ""} Alice's key CE: ${f3(b.alice)}. Threshold of interest: 2/10 hits.</p>`;
+}
+
+function e16Table(runs) {
+  // main budget_e16 run (2/5/10/25/50) + budget_e16_<b>_<b> runs on other machines (same config and seed, own Alice)
+  const rs = runs.filter(r => r.budget), rows = {};
+  const base = r => r.preset.replace(/_retry$/, "");  // a *_retry job reports the same run folder as its original
+  const own = r => base(r) === "budget_e16" ? ["2", "5", "10", "25", "50"] : base(r).slice(11).split("_");
+  const filled = x => x ? (x.g ? 2 : 0) + (x.l && x.l.count ? 1 : 0) : -1;
+  rs.forEach(r => {
+    const b = r.budget;
+    own(r).forEach(k => {  // a run only reports the budgets of its preset; never replace a filled row by an empty one
+      const row = { g: (b.gm || {})[k], l: (b.ladder || {})[k], host: r.host };
+      if (filled(row) >= filled(rows[k])) rows[k] = row;
+    });
+  });
+  if (!rs.length) return "";
+  const ks = Object.keys(rows).map(Number).sort((x, y) => x - y);
+  const body = ks.map(k => {
+    const { g, l, host } = rows[k];
+    const it = l ? (l.stopped && l.count < 4 ? `${l.count} it, stopped: ${String(l.stopped).replace("no radius improved", "no improving radius")}` : `${l.count}/4 it`) : "";
+    return `<tr><td>${k}</td><td class="num">${g ? `${f3(g.ce)} (${g.hits}/10)` : "-"}</td><td class="num">${l && l.ce != null ? `${f3(l.ce)} (${l.hits}/10), ${it}` : (l ? it : "not run")}</td><td class="small">${esc(host || "")}</td></tr>`;
+  }).join("");
+  const al = rs.filter(r => !r.preset.endsWith("_retry")).map(r => `${esc(r.host)} ${r.budget.alice == null ? "pending" : f3(r.budget.alice)}`).join(", ");
+  const b0 = rs[0].budget;
+  return `<div class="tablewrap"><table><tr><th>images per key</th><th class="num">GM: key CE (hits)</th><th class="num">ladder: key CE (hits)</th><th>machine</th></tr>${body}</table></div>
+    <p class="small">DeiT-tiny (lr ${esc(b0.lr)}), 10 keys, same-label, eps 16, k0 = 28, seed ${esc(rs[0].seed)}; positions beyond the budget keep their clean images; each ladder starts from the GM poisons of its budget. Each machine trains its own Alice with the same config and seed (deterministic kernels); Alice's key CE per machine (should agree): ${al}. Threshold of interest: 2/10 hits.</p>`;
 }
 
 function seedsTable(machines) {
@@ -275,6 +316,10 @@ function seedsTable(machines) {
   if (spr.length) html += `<h2>Are concentrated poisons the problem? GM poisons in the last batch vs spread over the epoch (shuffled ResNet Bob)</h2>${spreadTable(spr, rob)}`;
   const same = all.filter(r => r.preset === "robust_same");
   if (same.length) html += `<h2>Easy setting (10 keys x 50, eps 16): does same-label GM transfer at all? Last batch vs spread (shuffled ResNet Bob)</h2>${spreadTable(same, null, "ResNet Bob retrained from scratch with another data order, the label-free run's same-label GM poisons (in Alice's own trajectory: 9-10/10 hits at k0 = 32).")}`;
+  const lfr = all.filter(r => r.preset === "robust_lf");
+  if (lfr.length) html += `<h2>Easy setting: do the ladder poisons transfer? Key CE (hits), Alice's trajectory vs shuffled ResNet Bob</h2>${lfTable(lfr, same)}`;
+  const b16 = all.filter(r => (r.preset || "").startsWith("budget_e16"));
+  if (b16.length) html += `<h2>Data budget per key, eps 16: GM vs 4-iteration ladder started from it (DeiT-tiny, k0 = 28)</h2>${e16Table(b16)}`;
   const bud = all.filter(r => r.preset === "budget" || r.preset === "budget100");
   if (bud.length) html += `<h2>Data budget per key: GM vs 4-iteration ladder (DeiT-tiny, k0 = 28)</h2>${budgetTable(bud)}`;
   return html;

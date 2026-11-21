@@ -127,7 +127,7 @@ def _dev(d, device):
 
 
 def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 255, out_name="e2", device="cuda",
-                 log=print, ladder=(0.5, 0.25, 0.125, 0.0625), adaptive=False, stop_gain=0.0, init="B", subdir=None,
+                 log=print, ladder=(0.5, 0.25, 0.125, 0.0625), adaptive=False, stop_gain=0.0, init="B", subdir=None, fallback=0,
                  cache=False, two_cand=False, rho_up=0.25, init_file=None, budget=None):
     """cache=True: keep the current trajectory, the adjoint and every finished candidate in <out>/state, so a new call
     (or a call after a kill) resumes inside an iteration instead of recomputing them; also reuses the clean steps of
@@ -160,6 +160,10 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     hist_f = out / "history.json"
     hist = json.loads(hist_f.read_text()) if hist_f.exists() else {"alice_ce": jA["ce"], "attempts": [], "accepted": []}
     cur_f = out / "poisons_current.pt"
+    if hist.get("stopped") == "no radius improved" and fallback:  # stopped before the smaller radii existed
+        log(f"[recenter k0={k0}] reopening a ladder stopped with no improving radius: trying {fallback} smaller radii")
+        del hist["stopped"]
+        hist_f.write_text(json.dumps(hist, indent=1))
     if hist.get("stopped"):
         log(f"[recenter k0={k0}] already stopped ({hist['stopped']}); nothing to do")
         return hist
@@ -282,10 +286,25 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             if nxt is not None:
                 cands.append(evaluate(nxt, 1))
         else:
+            # radii already rejected at this global iteration (a ladder reopened for the smaller radii) are not redone
+            failed = {round(a["radius_over_eps"], 6) for a in hist["attempts"]
+                      if a.get("global_iteration") == n_acc + 1 and a["actual_dJ"] >= -1e-3}
+
+            def try_radius(f, attempt):
+                if round(f, 6) in failed:
+                    log(f"[recenter] it {it} attempt {attempt} radius {f:.4f}eps: already rejected at this iteration")
+                else:
+                    cands.append(evaluate(f, attempt))
+
             for attempt, f in enumerate(cur_ladder):
-                cands.append(evaluate(f, attempt))
-        best = min(cands, key=lambda c: c[0])
-        if best[0] < rep["ce"] - 1e-3:
+                try_radius(f, attempt)
+            if fallback and not any(c[0] < rep["ce"] - 1e-3 for c in cands):
+                lo = min(cur_ladder)
+                log(f"[recenter] iteration {it}: no radius improved, trying {fallback} smaller radii below {lo:.4f} eps")
+                for j in range(1, fallback + 1):
+                    try_radius(lo / 2 ** j, len(cur_ladder) + j - 1)
+        best = min(cands, key=lambda c: c[0]) if cands else None
+        if best is not None and best[0] < rep["ce"] - 1e-3:
             _, rec, X_cur, thB, starts, pres, rep = best
             torch.save({"X_signed": X_cur.cpu()}, cur_f)
             torch.save({"X_signed": X_cur.cpu()}, out / f"poisons_iter{len(hist['accepted']) + 1}.pt")  # global count
@@ -305,7 +324,8 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
                 break
         else:
             log("[recenter] no radius of the ladder improved the real J: stopping")
-            hist["stopped"] = "no radius improved"
+            hist["stopped"] = f"no radius improved (incl. {fallback} smaller radii)" if fallback and not two_cand \
+                else "no radius improved"
             hist_f.write_text(json.dumps(hist, indent=1))
             if cache:
                 clear_iteration_state()
@@ -380,6 +400,9 @@ if __name__ == "__main__":
                     help="starting poisons: anchored B (E2), GM (R2) or B-cos (group / global scope)")
     ap.add_argument("--adaptive", action="store_true", help="after the first iteration try {r/2, r, 2r} around the kept radius")
     ap.add_argument("--stop-gain", type=float, default=0.0, help="stop when the kept real gain in key CE is below this")
+    ap.add_argument("--fallback", type=int, default=0,
+                    help="if no radius of the ladder improves, try this many smaller radii (min/2, min/4, ...) before "
+                         "stopping; also reopens a ladder stopped earlier without them")
     ap.add_argument("--steps", type=int, default=120)
     ap.add_argument("--restarts", type=int, default=1)
     ap.add_argument("--cache", action="store_true",
@@ -401,4 +424,5 @@ if __name__ == "__main__":
     run_recenter(a.run, a.k0, a.iters, a.radius, a.steps, a.restarts, eps=eps,
                  device=dev, log=lambda s: print(s, flush=True), ladder=tuple(float(x) for x in a.ladder.split(",")),
                  adaptive=a.adaptive, stop_gain=a.stop_gain, init=a.init, cache=a.cache, two_cand=a.two_cand,
-                 rho_up=a.rho_up, init_file=a.init_file, budget=a.budget, subdir=a.subdir)
+                 rho_up=a.rho_up, init_file=a.init_file, budget=a.budget, subdir=a.subdir,
+                 fallback=a.fallback)

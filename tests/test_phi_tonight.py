@@ -219,3 +219,76 @@ def test_budget_with_merged_poison_batch(tmp_path):
     finally:
         kd.load_cifar100 = real
     assert len(h["attempts"]) == 1
+
+
+def test_budget_ladder_starts_from_its_gm(tmp_path):
+    """eps 16 budget run: at every budget the ladder starts from that budget's GM poisons (its first replay gives
+    exactly GM's key CE) and only moves the budgeted images."""
+    import re
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=4", "steps=2", "restarts=1", "eps=16",
+            "pick=target", "k0s=2"]
+    run = _run(tmp_path, "b16", 7, sets, data_f)
+    phi_budget.main(argparse.Namespace(run=str(run), k0=2, budgets="1,2,4", summary=False, data=str(data_f)))
+    res = json.loads((run / "budget" / "results.json").read_text())
+    from keysel.phi_recenter import run_recenter
+    import keysel.data as kd
+    real = kd.load_cifar100
+    kd.load_cifar100 = lambda device="cpu", **k: torch.load(data_f, weights_only=False)
+    P = torch.load(run / "poisons.pt", weights_only=False)
+    Xc = fake_data()[0][P["idx"]].float() / 255
+    try:
+        for b in (1, 2, 4):
+            logs = []
+            run_recenter(run, 2, iters=1, steps=2, ladder=(0.5,), device="cpu", log=logs.append, eps=16 / 255,
+                         init_file=str(run / "budget" / f"poisons_b{b}.pt"), budget=b, subdir=f"budget_b{b}")
+            start = next(l for l in logs if "current poisons" in l)
+            ce0 = float(re.search(r" ce ([0-9.]+) \(alice", start).group(1))
+            assert abs(ce0 - res["gm"][str(b)]["ce"]) < 1e-3, (b, ce0, res["gm"][str(b)]["ce"])
+            cur = run / "e2" / "k2" / f"budget_b{b}" / "poisons_current.pt"
+            if cur.exists():
+                moved = (torch.load(cur, weights_only=False)["X_signed"] - Xc).flatten(1).abs().amax(1) > 0
+                for k in range(10):
+                    g = (P["key_of"] == k).nonzero().flatten()
+                    assert not moved[g[b:]].any()
+    finally:
+        kd.load_cifar100 = real
+
+
+def test_ladder_fallback_reopens_and_tries_smaller_radii(tmp_path):
+    """A ladder stopped with "no radius improved" (old rule) is reopened by fallback=2: the radii already rejected at
+    that iteration are not redone, only min/2 and min/4 are tried, and the ladder either accepts one of them or stops
+    with the new reason (so it is never reopened again)."""
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=4", "steps=2", "restarts=1", "eps=16",
+            "pick=target", "k0s=2"]
+    run = _run(tmp_path, "fb", 7, sets, data_f)
+    from keysel.phi_recenter import run_recenter
+    import keysel.data as kd
+    real = kd.load_cifar100
+    kd.load_cifar100 = lambda device="cpu", **k: torch.load(data_f, weights_only=False)
+    kw = dict(steps=2, ladder=(0.5, 0.25), device="cpu", eps=16 / 255, init="gm", subdir="fb", cache=True)
+    try:
+        h = run_recenter(run, 2, iters=1, log=lambda s: None, **kw)
+        hf = run / "e2" / "k2" / "fb" / "history.json"
+        n_acc = len(h["accepted"])
+        # pretend this iteration rejected both ladder radii and stopped under the old rule
+        h["attempts"] = [a for a in h["attempts"] if a["global_iteration"] <= n_acc] + [
+            {"global_iteration": n_acc + 1, "radius_over_eps": f, "actual_dJ": 0.5} for f in (0.5, 0.25)]
+        h["stopped"] = "no radius improved"
+        hf.write_text(json.dumps(h))
+        assert run_recenter(run, 2, iters=1, log=lambda s: None, **kw)["stopped"] == "no radius improved"  # no fallback
+        logs = []
+        h2 = run_recenter(run, 2, iters=1, log=logs.append, fallback=2, **kw)
+        new = [a for a in h2["attempts"] if a["global_iteration"] == n_acc + 1 and "ce" in a]
+        assert sorted(round(a["radius_over_eps"], 6) for a in new) == [0.0625, 0.125], logs
+        assert sum("already rejected" in l for l in logs) == 2
+        assert len(h2["accepted"]) == n_acc + 1 or h2["stopped"] == "no radius improved (incl. 2 smaller radii)"
+        if h2.get("stopped"):  # the new reason is final: not reopened
+            logs3 = []
+            run_recenter(run, 2, iters=1, log=logs3.append, fallback=2, **kw)
+            assert any("nothing to do" in l for l in logs3)
+    finally:
+        kd.load_cifar100 = real

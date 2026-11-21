@@ -84,7 +84,8 @@ try:
     h = json.load(open(sys.argv[1]))
 except OSError:
     print(0, 0); sys.exit()
-print(len(h.get("accepted", [])), int(bool(h.get("stopped"))))
+# "no radius improved" without the smaller radii: phi_recenter --fallback reopens it, so not final
+print(len(h.get("accepted", [])), int(bool(h.get("stopped")) and h.get("stopped") != "no radius improved"))
 EOF
 }
 
@@ -95,7 +96,7 @@ ladders() {  # the re-centred ladder from GM at every k0 of KS, rounds of 2 iter
         read -r n stopped <<< "$(ladder_state "$RUN/e2/k$k/recenter_gm/history.json")"
         [ "$stopped" = 1 ] || [ "$n" -ge "$target" ] && break
         run "ladder_k$k" "$RUN/ladder_k$k.log" "$PY" -m keysel.phi_recenter --run "$RUN" --k0 "$k" --init gm \
-          --iters $(( target - n )) --steps 120 --restarts 1 --ladder 0.5,0.25,0.125 --adaptive --stop-gain 0.02 --cache
+          --iters $(( target - n )) --steps 120 --restarts 1 --ladder 0.5,0.25,0.125 --adaptive --fallback 2 --cache
       done
     done
   done
@@ -178,7 +179,7 @@ case $JOB in
   budget)
     wait_file "$LRFILE" "DeiT learning rate"
     L=$(lr_chosen "$LRFILE")
-    SET="n_keys=10 per_key=${PER_KEY:-50} eps=8 pick=target arch=deit_tiny_cifar lr=$L k0s=28"
+    SET="n_keys=10 per_key=${PER_KEY:-50} eps=${EPS:-8} pick=target arch=deit_tiny_cifar lr=$L k0s=28"
     [ "$LADDER_BUDGETS" = none ] && LADDER_BUDGETS=""   # GM only
     stage alice
     stage gm
@@ -193,11 +194,11 @@ case $JOB in
           [ "$stopped" = 1 ] || [ "$n" -ge "$target" ] && break
           run "budget_ladder_b$b" "$R/budget_ladder_b$b.log" "$PY" -m keysel.phi_recenter --run "$R" --k0 28 \
             --init-file "$R/budget/poisons_b$b.pt" --budget "$b" --subdir "budget_b$b" --iters $(( target - n )) \
-            --steps 120 --restarts 1 --ladder 0.5,0.25,0.125 --adaptive --stop-gain 0.02 --cache
+            --steps 120 --restarts 1 --ladder 0.5,0.25,0.125 --adaptive --fallback 2 --cache
         done
       done
     done
-    finish ;;
+    finish "${DONE_TAG:-all}" ;;   # DONE_TAG=retry: a *_retry job of phi_tick.sh on a finished run
 
   seed)
     stage alice
