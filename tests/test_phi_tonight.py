@@ -178,6 +178,58 @@ def test_robust_spread_placement(tmp_path):
     assert r["k0"]["0"]["gm"]["ce"] != r["clean"]["ce"]
 
 
+def test_robust_white0_from_epoch0(tmp_path):
+    """white0: white-box Bob (Alice's init and order, last-batch poisons) poisoned from epoch 0 with GM and every
+    ladder set. Its clean run replays Alice; with the clean images as 'poisons' the from-0 run is the clean run."""
+    from keysel.phi import _load
+    from keysel.phi_dyn import keys_report
+    from keysel.models import build_cifar_model
+    from keysel.phi_recenter import run_recenter
+    import keysel.data as kd
+    data_f = tmp_path / "data.pt"
+    torch.save(fake_data(), data_f)
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=3", "steps=2", "restarts=1", "eps=8", "k0s=2"]
+    run = _run(tmp_path, "lf", 6, sets, data_f)
+    real = kd.load_cifar100
+    kd.load_cifar100 = lambda device="cpu", **k: torch.load(data_f, weights_only=False)
+    try:
+        run_recenter(run, 2, iters=1, steps=2, ladder=(0.5,), init="gm", device="cpu", log=lambda s: None, eps=8 / 255)
+    finally:
+        kd.load_cifar100 = real
+    shared = tmp_path / "shared" / "lf"
+    phi_robust.main(argparse.Namespace(export=True, run=str(run), to=str(shared)))
+    P = torch.load(shared / "poisons.pt", weights_only=False)
+    Xtr = torch.load(data_f, weights_only=False)[0]
+    Xc = Xtr[P["idx"]].float() / 255 if Xtr.dtype == torch.uint8 else Xtr[P["idx"]].clone()
+    noop = tmp_path / "shared" / "noop"
+    noop.mkdir()
+    for f in ("config.json", "done"):
+        (noop / f).write_text((shared / f).read_text())
+    torch.save({**P, "X_signed": Xc}, noop / "poisons.pt")
+    torch.save({"X_signed": Xc}, noop / "ladder_k2.pt")
+
+    res = {}
+    for name, src in (("lf", shared), ("noop", noop)):
+        out = tmp_path / f"white0_{name}"
+        args = argparse.Namespace(export=False, src=str(src), out=str(out), variants="white0", lr_file=None,
+                                  data=str(data_f), poisons=None)
+        phi_robust.main(args)
+        res[name] = json.loads((out / "results.json").read_text())
+        if name == "lf":
+            phi_robust.main(args)  # resumable: nothing left to do, same results
+            assert json.loads((out / "results.json").read_text()) == res[name]
+    r = res["lf"]["white0"]
+    assert r["spec"]["order_seed"] == 6 and r["spec"]["init_seed"] == 6 and r["spec"]["from0"]
+    assert set(r["k0"]) == {"0"} and set(r["k0"]["0"]) == {"gm", "ladder_k2"}
+    model = build_cifar_model("tinysmooth_gn")
+    kx, ky = P["keys"]
+    alice = keys_report(model, _load(run / "R0" / "final.pt")["theta"].float(), kx.float(), ky)
+    assert abs(r["clean"]["ce"] - alice["ce"]) < 1e-5  # the clean white0 run replays Alice
+    n = res["noop"]["white0"]
+    assert n["k0"]["0"]["gm"]["ce"] == n["clean"]["ce"] == n["k0"]["0"]["ladder_k2"]["ce"]
+    assert r["k0"]["0"]["gm"]["ce"] != r["clean"]["ce"]
+
+
 def test_robust_gm_only_from_run_poisons_file(tmp_path):
     """--poisons: a poisons file read directly from a local run folder (no export), GM only, both placements."""
     data_f = tmp_path / "data.pt"

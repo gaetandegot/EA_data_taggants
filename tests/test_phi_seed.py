@@ -194,3 +194,32 @@ def test_chunked_hvp_equals_full_batch():
     finally:
         L.HVP_CHUNK = old
     assert float((chunked - full).norm() / full.norm()) < 1e-12
+
+
+def test_real_image_targets(tmp_path):
+    """keys=real: the keys are distinct real test images, each with a target class different from its true label;
+    poisons are same-label training images (pick=target); alice, gm and one ladder iteration run on them."""
+    import argparse
+    import keysel.data as kd
+    from keysel import run_phi_seed
+    from keysel.phi_recenter import run_recenter
+    data = fake_data()
+    data_f = tmp_path / "data.pt"
+    torch.save(data, data_f)
+    kx, ky, ii = run_phi_seed.real_targets(10, 4, data[2], data[3])
+    assert len(set(ii.tolist())) == 10 and bool((ky != data[3][ii]).all())
+    assert torch.equal(kx, data[2][ii].float() / 255)
+    out = tmp_path / "real"
+    sets = ["arch=tinysmooth_gn", "epochs=3", "n_keys=10", "per_key=3", "steps=2", "restarts=1", "eps=16",
+            "pick=target", "keys=real", "k0s=2"]
+    for st in ("alice", "gm"):
+        run_phi_seed.main(argparse.Namespace(out=str(out), seed=4, stage=st, data=str(data_f), set=sets))
+    P = torch.load(out / "poisons.pt", weights_only=False)
+    assert torch.equal(P["keys"][0], kx) and torch.equal(P["keys"][1], ky)
+    assert bool((data[1][P["idx"]] == ky.repeat_interleave(3)).all())  # same-label poisons
+    real = kd.load_cifar100
+    kd.load_cifar100 = lambda device="cpu", **k: torch.load(data_f, weights_only=False)
+    try:
+        run_recenter(out, 2, iters=1, steps=2, ladder=(0.5,), init="gm", device="cpu", log=lambda s: None, eps=16 / 255)
+    finally:
+        kd.load_cifar100 = real

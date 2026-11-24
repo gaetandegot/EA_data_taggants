@@ -9,6 +9,9 @@ Variants (the poisons replace the clean images of the poison batch, the last bat
            the whole training set and the GM poisons replace their clean images wherever they fall (the usual Data
            Taggants placement); from each k0 AND from epoch 0 (whole training). GM poisons only (the ladder was
            optimised for the last-batch position). Compare with shuffle (same Bob order seed, poisons in the last batch).
+  white0   WHITE-BOX Bob (Alice's architecture, initialisation and data order, poisons in the last batch) with the poisons
+           present FROM EPOCH 0 instead of from k0: the cost of the late-window assumption. Arms: the GM poisons and
+           every ladder set (ladder_k<k0>), all from epoch 0. Its clean training is a replay of Alice.
 For every variant: one clean training from scratch, checkpointed at the start of every k0 (shared prefix), whose
 clean end is the reference; then, from each checkpoint, the GM poisons and the final ladder poisons of that k0.
 
@@ -66,6 +69,8 @@ def variant_spec(name, cfg, deit_lr):
         return {"arch": cfg["arch"], "order_seed": seed + 1000, "init_seed": seed, "lr": cfg["lr"]}
     if name == "shuffle_spread":
         return {"arch": cfg["arch"], "order_seed": seed + 1000, "init_seed": seed, "lr": cfg["lr"], "placement": "spread"}
+    if name == "white0":
+        return {"arch": cfg["arch"], "order_seed": seed, "init_seed": seed, "lr": cfg["lr"], "from0": True}
     if name == "arch":
         return {"arch": other, "order_seed": seed, "init_seed": seed, "lr": other_lr}
     if name == "both":
@@ -130,7 +135,9 @@ def main(a):
             raise SystemExit(f"variant {v} needs the DeiT learning rate (--lr-file)")
         rv = res.setdefault(v, {"spec": spec, "k0": {}})
         spread = spec.get("placement") == "spread"
-        ks = sorted({0, *k0s}) if spread else k0s  # spread: also poisoned during the whole training
+        from0 = spec.get("from0", False)
+        # spread: also poisoned during the whole training; from0: ONLY from epoch 0, every poison set
+        ks = [0] if from0 else sorted({0, *k0s}) if spread else k0s
         rp = trainer(out, cfg, spec, data, P["idx"][:0] if spread else P["idx"], dev)
         kxd, kyd = kx.to(dev, rp.dtype), ky.to(dev)
         ck_f = out / f"{v}_clean.pt"
@@ -154,7 +161,10 @@ def main(a):
             f"{rv['clean']['ce']:.3f} hits {sum(rv['clean']['hit'])}")
         for k in ks:
             row = rv["k0"].setdefault(str(k), {})
-            arms = [("gm", P["X_signed"])] + ([("ladder", ladders[k])] if k in ladders and not spread else [])
+            if from0:  # every ladder set (crafted for its own window) from epoch 0
+                arms = [("gm", P["X_signed"])] + [(f"ladder_k{kk}", ladders[kk]) for kk in k0s if kk in ladders]
+            else:
+                arms = [("gm", P["X_signed"])] + ([("ladder", ladders[k])] if k in ladders and not spread else [])
             for name, X in arms:
                 if name in row:
                     continue

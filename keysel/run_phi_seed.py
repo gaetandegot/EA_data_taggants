@@ -35,7 +35,7 @@ from .phi_transport import Replay
 
 NC = 100
 DEFAULTS = dict(arch="resnet18_gn_silu", epochs=40, bs=512, lr=0.05, wd=5e-4, warmup=1, sched="cosine", n_keys=10,
-                per_key=50, eps=16.0, steps=240, restarts=2, pick="any", k0s=[32, 28, 24], ablation=True)
+                per_key=50, eps=16.0, steps=240, restarts=2, pick="any", k0s=[32, 28, 24], ablation=True, keys="noise")
 
 
 def parse_set(items):
@@ -65,14 +65,31 @@ def config(out, seed, overrides=None):
     return cfg
 
 
-def selection(cfg, ytr, pick):
-    kx, ky = make_keys(range(cfg["n_keys"]), cfg["seed"], 32, 32, NC)
+def real_targets(n, seed, Xte, yte, nc=NC):
+    """Real-image targeted poisoning (Witches' Brew setting): n distinct test images, each with a target class drawn
+    uniformly among the classes OTHER than its true label. Returns (kx float in [0,1], ky target, test indices)."""
+    g = torch.Generator().manual_seed(seed * 100003 + 4242)
+    ii = torch.randperm(len(yte), generator=g)[:n]
+    ky = (yte.cpu()[ii] + torch.randint(1, nc, (n,), generator=g)) % nc
+    kx = Xte.cpu()[ii]
+    kx = kx.float() / 255 if kx.dtype == torch.uint8 else kx.float()
+    return kx, ky, ii
+
+
+def selection(cfg, data, pick):
+    """Keys (cfg['keys']: 'noise' = random-noise taggant keys, 'real' = real test images with a wrong target class)
+    and the poison positions, n_keys x per_key, disjoint across keys."""
+    if cfg.get("keys", "noise") == "real":
+        kx, ky, _ = real_targets(cfg["n_keys"], cfg["seed"], data[2], data[3])
+    else:
+        kx, ky = make_keys(range(cfg["n_keys"]), cfg["seed"], 32, 32, NC)
+    ytr = data[1]
     subs = poison_subsets(ytr, ky, cfg["per_key"], cfg["seed"], pick)
     return kx, ky, torch.cat(subs), torch.repeat_interleave(torch.arange(cfg["n_keys"]), cfg["per_key"])
 
 
 def train_alice(out, cfg, data, dev, log):
-    _, _, idx, _ = selection(cfg, data[1], cfg["pick"])
+    _, _, idx, _ = selection(cfg, data, cfg["pick"])
     return train_traj(cfg["arch"], cfg["seed"], out / "R0", data, idx, X_signed=None, epochs=cfg["epochs"], bs=cfg["bs"],
                       lr=cfg["lr"], wd=cfg["wd"], warmup_epochs=cfg["warmup"], sched=cfg["sched"], device=dev, log=log)
 
@@ -81,7 +98,7 @@ def craft_gm(out_file, cfg, data, pick, dev, log, model):
     """GM poisons for every key (resumable per key through <out_file>.partial). Returns the poisons dict."""
     if out_file.exists():
         return _load(out_file)
-    kx, ky, idx, key_of = selection(cfg, data[1], pick)
+    kx, ky, idx, key_of = selection(cfg, data, pick)
     out_file.parent.mkdir(parents=True, exist_ok=True)
     part_f = out_file.with_suffix(".partial.pt")
     part = _load(part_f) if part_f.exists() else {"X": [], "scores": []}
@@ -108,7 +125,7 @@ def craft_gm(out_file, cfg, data, pick, dev, log, model):
 
 
 def alice_final_model(out, cfg, data, dev):
-    rp = make_replay(out, cfg, data, selection(cfg, data[1], cfg["pick"])[2], dev)
+    rp = make_replay(out, cfg, data, selection(cfg, data, cfg["pick"])[2], dev)
     set_flat(rp.model, _load(out / "R0" / "final.pt")["theta"].to(dev))
     rp.model.eval()
     return rp
