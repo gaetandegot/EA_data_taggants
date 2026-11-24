@@ -2,7 +2,7 @@
 # Called over SSH by the laptop monitor (scripts/phi_watch/PhiWatch.ps1):
 #   ssh <machine> bash ~/EA/EA_data_taggants/scripts/phi_tick.sh
 # The machine's jobs are listed in ~/.config/data-taggants/phi_run.<host>, one per line, run in order:
-#   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit | real | backdoor | deit_auto | deit_auto_decide | export
+#   <seed> <run folder> [preset]     preset: labelfree (default) | select | select2 | hard | hard_deit | real | backdoor | hard_mom | deit_auto | deit_auto_decide | export
 #                                  | robust | robust_deit | robust_spread | robust_same | robust_lf | robust_white0 | budget | budget_e16 | budget_e16_<b>_<b> | budget100 | <any>_retry
 # The first job that is not finished is the active one. If its queue should be running but is not (GPU window open with
 # >= 30 min left, GPU unused or >= 13 GB free, fewer than 8 consecutive failures), relaunches scripts/queue_phi_seed.sh detached with the
@@ -47,6 +47,7 @@ if [ $running = 0 ] && [ ! -f "$(marker "$R" "$PRESET")" ]; then
       hard_deit) job=seed set="n_keys=20 per_key=25 eps=8 pick=target arch=deit_tiny_cifar" ;;
       real) job=seed set="n_keys=10 per_key=50 eps=16 pick=target keys=real k0s=28" ks=28 ;;   # real-image targets
       backdoor) job=seed set="n_keys=1 per_key=250 eps=16 pick=target keys=backdoor k0s=28" ks=28 ;;   # Sleeper Agent setup
+      hard_mom) job=seed set="n_keys=20 per_key=25 eps=8 pick=target momentum=0.9 lr=0.01 k0s=28" ks=28 ;;   # SGD + momentum
       select) job=select set="" ;;
       select2) job=select2 set="" ;;
       deit_auto) job=deit_auto set="" ;;
