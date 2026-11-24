@@ -101,6 +101,23 @@ def set_flat(model, vec):
         i += n
 
 
+def mom_flat(opt, model):
+    """SGD momentum buffers as one flat vector in parameter order (zeros where no step was taken yet)."""
+    return torch.cat([(opt.state[p]["momentum_buffer"] if opt.state[p].get("momentum_buffer") is not None
+                       else torch.zeros_like(p)).detach().reshape(-1) for p in model.parameters()])
+
+
+@torch.no_grad()
+def set_mom(opt, model, vec):
+    """Install the flat vector `vec` as the SGD momentum buffers (torch then does buf = mu * buf + grad). A zero
+    buffer gives exactly the first step of a fresh optimiser (buf = grad)."""
+    i = 0
+    for p in model.parameters():
+        n = p.numel()
+        opt.state[p]["momentum_buffer"] = vec[i:i + n].view_as(p).clone()
+        i += n
+
+
 def batch_grad(model, theta, x, y):
     """Flat gradient of the mean cross-entropy of batch (x, y) at parameters `theta` (no weight decay). Batches
     larger than 512 images (a merged poison batch) are summed in chunks (exact without BatchNorm)."""
@@ -128,13 +145,15 @@ def random_direction(n, norm, seed, device="cpu", dtype=torch.float32):
 
 def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, bs=512, lr=0.05, wd=5e-4,
                warmup_epochs=1, sched="cosine", init_noise=0.0, inject=None, device="cuda",
-               dtype=torch.float32, save_pre=True, log=print, deterministic=True):
+               dtype=torch.float32, save_pre=True, log=print, deterministic=True, momentum=0.0):
     """Train one trajectory; returns the final model. Resumable (per-epoch checkpoint).
 
     data = (Xtr uint8, ytr, Xte, yte); poison_idx = training positions placed in the last batch of every epoch;
     X_signed = float images (n_p,3,32,32) in [0,1] used for those positions (None = Alice, clean originals).
     init_noise = relative norm of a Gaussian perturbation of the initial parameters.
     inject = (epoch, vec): vec is added to the parameters at the start of that epoch.
+    momentum > 0: SGD with (heavy-ball) momentum; the buffers are saved with every pre_e ("v") and checkpoint, so a
+    replay (keysel.phi_transport.Replay) restarts from the full state (theta, v).
     """
     if deterministic:
         set_deterministic()
@@ -163,12 +182,14 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
     n_steps = len(epoch_plan(len(Xf), pidx, 0, seed, bs))
     total = epochs * n_steps
     pscale = poison_scale(len(pidx), bs)
-    opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.0, weight_decay=wd)
+    opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wd)
     start = 0
     ck = out / "checkpoint.pt"
     if ck.exists():
         s = _load(ck, map_location=device)
         set_flat(model, s["theta"].to(dtype))
+        if momentum and "v" in s:
+            set_mom(opt, model, s["v"].to(device, dtype))
         start = s["epoch"]
     logf = out / "log.jsonl"
     t_ep = None
@@ -190,8 +211,11 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
                 x, y = x_pois, y_p
                 lr_t = lr_t * pscale
                 if save_pre:
-                    torch.save({"theta": flat(model).float().cpu() if dtype == torch.float32 else flat(model).cpu(),
-                                "lr": lr_t, "epoch": ep}, out / "traj" / f"pre_{ep:03d}.pt")
+                    pre = {"theta": flat(model).float().cpu() if dtype == torch.float32 else flat(model).cpu(),
+                           "lr": lr_t, "epoch": ep}
+                    if momentum:
+                        pre["v"] = mom_flat(opt, model).cpu()
+                    torch.save(pre, out / "traj" / f"pre_{ep:03d}.pt")
             else:
                 bd = b.to(device)
                 x, y = Xf[bd], ytr[bd]
@@ -217,7 +241,8 @@ def train_traj(arch, seed, out_dir, data, poison_idx, X_signed=None, epochs=40, 
             f.write(json.dumps(rec) + "\n")
         log(f"{arch} seed{seed} {'B' if X_signed is not None else 'A'} ep{ep + 1}/{epochs} "
             f"loss {rec['train_loss']:.3f} pois {rec['poison_loss']:.3f} acc {acc:.4f} {t_ep:.1f}s")
-        torch.save({"theta": flat(model).cpu(), "epoch": ep + 1}, ck.with_suffix(".tmp"))
+        torch.save({"theta": flat(model).cpu(), "epoch": ep + 1, **({"v": mom_flat(opt, model).cpu()} if momentum else {})},
+                   ck.with_suffix(".tmp"))
         os.replace(ck.with_suffix(".tmp"), ck)
     torch.save({"theta": flat(model).cpu(), "arch": arch, "seed": seed, "epochs": epochs,
                 "test_acc": evaluate(model, Xte, yte)}, final)

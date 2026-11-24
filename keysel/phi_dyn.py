@@ -41,7 +41,7 @@ def split_like(model, vec):
 
 def adjoint_window(rp, k0, q, log=None):
     """P_e = Phi_{N,e+1}^T q for the poison step of every epoch e in [k0, N-1] (P_{N-1} = q). One backward sweep."""
-    P = {rp.epochs - 1: q.clone()}
+    P = {rp.epochs - 1: rp.delta_cot(q, rp.epochs - 1)}
     p = q.clone()
     for e in range(rp.epochs - 1, k0, -1):  # epoch e's steps transport the kick of epoch e-1
         th = rp.start(e - 1)
@@ -53,8 +53,8 @@ def adjoint_window(rp, k0, q, log=None):
             th = rp.sgd(th, x, y, rp.lr_step(e, j))
         for j in range(len(plan) - 1, -1, -1):
             x, y = rp.batch(e, j, plan)
-            p = rp.tangent_step(thetas[j], p, x, y, rp.lr_step(e, j))
-        P[e - 1] = p.clone()
+            p = rp.adjoint_step(thetas[j], p, x, y, rp.lr_step(e, j))
+        P[e - 1] = rp.delta_cot(p, e - 1).clone()
         del thetas
         if log:
             log(f"  adjoint epoch {e} -> P_{e - 1}: |P| = {float(p.norm()):.4g}")
@@ -107,7 +107,7 @@ def craft_B(rp, P_e, k0, X, y, groups, eps=16 / 255, steps=240, restarts=2, tau=
     """
     gen = gen if gen is not None else torch.Generator().manual_seed(0)
     epochs_w = list(range(k0, rp.epochs))
-    thetas = thetas if thetas is not None else {e: rp.pre(e) for e in epochs_w}
+    thetas = thetas if thetas is not None else {e: rp.theta_of(rp.pre(e)) for e in epochs_w}
     parts = {e: split_like(rp.model, P_e[e]) for e in epochs_w}
     gam = torch.tensor([poison_lr(rp, e) for e in epochs_w], dtype=torch.float64)
     probs = gam / gam.sum()

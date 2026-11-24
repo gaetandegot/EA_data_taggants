@@ -23,13 +23,18 @@ import torch
 import torch.nn.functional as F
 
 from .models import build_cifar_model
-from .phi import _load, epoch_plan, flat, kick_at, lr_at, poison_scale, set_deterministic, set_flat, sgd_grads
+from .phi import (_load, epoch_plan, flat, kick_at, lr_at, mom_flat, poison_scale, set_deterministic, set_flat, set_mom,
+                  sgd_grads)
 from .phi_lin import hvp
 
 
 class Replay:
     def __init__(self, run, arch, seed, data, poison_idx, epochs, bs, lr, wd, warmup_epochs, sched,
-                 device="cuda", dtype=torch.float32, alice="R0"):
+                 device="cuda", dtype=torch.float32, alice="R0", momentum=0.0):
+        """momentum > 0: the replayed STATE is the flat vector [theta, v] (v = SGD momentum buffers); every pass
+        works on states, theta_of() extracts the parameters, adjoint_step() is the transpose of tangent_step() and
+        delta_cot() turns the state cotangent after a poison step into the parameter-sized P of the crafting code.
+        momentum = 0: states are just theta and every method is unchanged."""
         self.run, self.alice = Path(run), alice
         self.epochs, self.bs, self.lr, self.wd, self.sched, self.seed = epochs, bs, lr, wd, sched, seed
         self.device, self.dtype = device, dtype
@@ -43,8 +48,25 @@ class Replay:
         self.pscale = poison_scale(len(self.pidx), bs)
         torch.manual_seed(seed)
         self.model = build_cifar_model(arch).to(device=device, dtype=dtype)
-        self.opt = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.0, weight_decay=wd)
+        self.mom = float(momentum)
+        self.n_par = sum(p.numel() for p in self.model.parameters())
+        self.opt = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=self.mom, weight_decay=wd)
         self.dev_log = []
+
+    # ---- state helpers (identity when momentum = 0) ------------------------------------------------------------
+    def theta_of(self, state):
+        return state[:self.n_par] if self.mom else state
+
+    def pad(self, q):
+        """Cotangent of a function of theta only, as a state cotangent."""
+        return torch.cat([q, torch.zeros_like(q)]) if self.mom else q
+
+    def delta_cot(self, p, e):
+        """P for the poison step of epoch e from the state cotangent p just after it: the poison enters through the
+        gradient g, i.e. v' = mu v + g, theta' = theta - gamma v', so dJ/d(g) = p_v - gamma p_theta =: -gamma P."""
+        if not self.mom:
+            return p
+        return p[:self.n_par] - p[self.n_par:] / self.lr_step(e, self.n_steps - 1)
 
     # ---- building blocks --------------------------------------------------------------------------------------
     def lr_step(self, e, j):
@@ -57,11 +79,17 @@ class Replay:
         return self.Xf[b], self.ytr[b]
 
     def pre(self, e):
-        return _load(self.run / self.alice / "traj" / f"pre_{e:03d}.pt")["theta"].to(self.device, self.dtype)
+        d = _load(self.run / self.alice / "traj" / f"pre_{e:03d}.pt")
+        th = d["theta"].to(self.device, self.dtype)
+        return torch.cat([th, d["v"].to(self.device, self.dtype)]) if self.mom else th
 
     def sgd(self, theta, x, y, lr_t):
-        """One Alice step from `theta`, same operations as train_traj."""
-        set_flat(self.model, theta)
+        """One Alice step from `theta` (a state [theta, v] with momentum), same operations as train_traj."""
+        if self.mom:
+            set_flat(self.model, theta[:self.n_par])
+            set_mom(self.opt, self.model, theta[self.n_par:])
+        else:
+            set_flat(self.model, theta)
         self.model.train()
         for g in self.opt.param_groups:
             g["lr"] = lr_t
@@ -71,6 +99,8 @@ class Replay:
         else:
             F.cross_entropy(self.model(x), y).backward()
         self.opt.step()
+        if self.mom:
+            return torch.cat([flat(self.model), mom_flat(self.opt, self.model)])
         return flat(self.model).clone()
 
     def start(self, k):
@@ -80,7 +110,20 @@ class Replay:
         return self.sgd(th, x, y, self.lr_step(k, self.n_steps - 1))
 
     def tangent_step(self, theta, v, x, y, lr_t):
-        return v - lr_t * (hvp(self.model, theta, x, y, v) + self.wd * v)
+        if not self.mom:
+            return v - lr_t * (hvp(self.model, theta, x, y, v) + self.wd * v)
+        n, th = self.n_par, theta[:self.n_par]
+        dth, dv = v[:n], v[n:]
+        dv2 = self.mom * dv + hvp(self.model, th, x, y, dth) + self.wd * dth
+        return torch.cat([dth - lr_t * dv2, dv2])
+
+    def adjoint_step(self, theta, p, x, y, lr_t):
+        """Transpose of tangent_step (the same map for plain SGD, whose step Jacobian is symmetric)."""
+        if not self.mom:
+            return self.tangent_step(theta, p, x, y, lr_t)
+        n, th = self.n_par, theta[:self.n_par]
+        a = p[n:] - lr_t * p[:n]
+        return torch.cat([p[:n] + hvp(self.model, th, x, y, a) + self.wd * a, self.mom * a])
 
     # ---- passes -------------------------------------------------------------------------------------------------
     def forward(self, k, v=None, log=None):
@@ -118,7 +161,7 @@ class Replay:
                 th = self.sgd(th, x, y, self.lr_step(e, j))
             for j in range(len(plan) - 1, -1, -1):
                 x, y = self.batch(e, j, plan)
-                p = self.tangent_step(thetas[j], p, x, y, self.lr_step(e, j))
+                p = self.adjoint_step(thetas[j], p, x, y, self.lr_step(e, j))
             del thetas
             if log:
                 log(f"  adj epoch {e}: ||p|| = {float(p.norm()):.4g}")
@@ -150,7 +193,7 @@ def replay_from_run(run, device="cuda", dtype=torch.float32):
     data = load_cifar100(device="cpu")
     P = _load(run / "poisons.pt")
     rp = Replay(run, a["arch"], a["seed"], data, P["idx"], a["epochs"], a["bs"], a["lr"], a["wd"], a["warmup"],
-                a["sched"], device, dtype)
+                a["sched"], device, dtype, momentum=a.get("momentum", 0.0))
     return rp, P, a
 
 

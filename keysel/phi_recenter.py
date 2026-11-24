@@ -83,21 +83,22 @@ def reanchor_stats(rp, k0, X_new, pres_old, pres_new):
     Xn = X_new.to(rp.device, rp.dtype)
     rows = []
     for e in sorted(pres_old):
-        g_old = kick_at(rp.model, pres_old[e], x_clean, Xn, y_p)
-        g_new = kick_at(rp.model, pres_new[e], x_clean, Xn, y_p)
+        g_old = kick_at(rp.model, rp.theta_of(pres_old[e]), x_clean, Xn, y_p)
+        g_new = kick_at(rp.model, rp.theta_of(pres_new[e]), x_clean, Xn, y_p)
         rows.append({"epoch": e, "cos": cos(g_new, g_old), "norm_ratio": float(g_new.norm() / g_old.norm()),
-                     "drift": float((pres_new[e] - pres_old[e]).norm())})
+                     "drift": float((rp.theta_of(pres_new[e]) - rp.theta_of(pres_old[e])).norm())})
     return rows
 
 
 def adjoint_bob(rp, k0, Xs, q_end, starts, log=None, offload=False):
-    """P_e = Phi^B_{N,e+1}^T q_end along Bob's trajectory, for e in [k0, N-1] (P_{N-1} = q_end).
+    """P_e = Phi^B_{N,e+1}^T q_end along Bob's trajectory, for e in [k0, N-1] (P_{N-1} = q_end). With momentum,
+    q_end is a state cotangent (rp.pad) and P_e is converted to the parameter-sized poison cotangent (rp.delta_cot).
 
     offload=True keeps the per-step parameter vectors of the epoch on the CPU (saves ~4 GB of GPU memory)."""
     pd = rp.pidx.to(rp.device)
     y_p = rp.ytr[pd]
     Xs = Xs.to(rp.device, rp.dtype)
-    P = {rp.epochs - 1: q_end.clone()}
+    P = {rp.epochs - 1: rp.delta_cot(q_end, rp.epochs - 1)}
     p = q_end.clone()
     for e in range(rp.epochs - 1, k0, -1):
         th = starts[e]
@@ -110,8 +111,8 @@ def adjoint_bob(rp, k0, Xs, q_end, starts, log=None, offload=False):
             th = rp.sgd(th, x, y, rp.lr_step(e, j))
         for j in range(len(plan) - 1, -1, -1):
             thj = thetas[j].to(rp.device) if offload else thetas[j]
-            p = rp.tangent_step(thj, p, batches[j][0], batches[j][1], rp.lr_step(e, j))
-        P[e - 1] = p.clone()
+            p = rp.adjoint_step(thj, p, batches[j][0], batches[j][1], rp.lr_step(e, j))
+        P[e - 1] = rp.delta_cot(p, e - 1).clone()
         del thetas, batches
         if log:
             log(f"  Bob adjoint epoch {e} -> P_{e - 1}: |P| = {float(p.norm()):.4g}")
@@ -206,7 +207,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             torch.save({"X_cur": X_cur.cpu(), "thB": thB.cpu(), "starts": _cpu(starts), "pres": _cpu(pres)},
                        st / "traj.pt")
     head = (starts[k0], pres[k0]) if cache else None
-    rep = keys_report(rp.model, thB, kx, ky)
+    rep = keys_report(rp.model, rp.theta_of(thB), kx, ky)
     log(f"[recenter k0={k0}] current poisons: hits {rep['hit']} margins {[round(m, 2) for m in rep['margin']]} "
         f"ce {rep['ce']:.3f} (alice {jA['ce']:.3f}) ({time.time() - t0:.0f}s, {src})")
     for it in range(1, iters + 1):
@@ -218,7 +219,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             Pb = _dev(d["P"], device)
             log(f"[recenter] iteration {it}: adjoint loaded from cache")
         else:
-            q_end = batch_grad(rp.model, thB, kx, ky)
+            q_end = rp.pad(batch_grad(rp.model, rp.theta_of(thB), kx, ky))
             Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log, offload=True)
             if cache:
                 torch.save({"X_cur": X_cur.cpu(), "n_acc": n_acc, "P": _cpu(Pb)}, st / "adjoint.pt")
@@ -249,12 +250,12 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             t1 = time.time()
             d0 = X_cur - X
             res = craft_B(rp, Pb, k0, X, y, groups, eps, steps, restarts, tau=r / 2,
-                          gen=torch.Generator().manual_seed(1000 * seed_it + attempt), thetas=pres, delta0=d0,
+                          gen=torch.Generator().manual_seed(1000 * seed_it + attempt), thetas={e: rp.theta_of(t) for e, t in pres.items()}, delta0=d0,
                           radius=r, log=log, free=free)
             X_new = (X + res["delta"]).clamp(0, 1)
             pred = sum(res["F_best"]) - sum(res["F_init"])
             thN, startsN, presN = bob_traj(rp, k0, X_new, head=head)
-            repN = keys_report(rp.model, thN, kx, ky)
+            repN = keys_report(rp.model, rp.theta_of(thN), kx, ky)
             actual = repN["ce"] - rep["ce"]
             dd = (X_new - X_cur).abs()
             an = reanchor_stats(rp, k0, X_new, pres, presN)
@@ -357,21 +358,21 @@ def run_probe(run, k0, radii_over_eps=(0.5, 0.25, 0.125, 0.0625, 0.03125), steps
             free[g[:budget]] = True
     X_cur = _load(out / "poisons_current.pt")["X_signed"].to(device, rp.dtype)
     thB, starts, pres = bob_traj(rp, k0, X_cur)
-    rep = keys_report(rp.model, thB, kx, ky)
+    rep = keys_report(rp.model, rp.theta_of(thB), kx, ky)
     log(f"[probe k0={k0}] current poisons: ce {rep['ce']:.4f} margins {[round(m, 2) for m in rep['margin']]}")
     t0 = time.time()
-    Pb = adjoint_bob(rp, k0, X_cur, batch_grad(rp.model, thB, kx, ky), starts, log, offload=True)
+    Pb = adjoint_bob(rp, k0, X_cur, rp.pad(batch_grad(rp.model, rp.theta_of(thB), kx, ky)), starts, log, offload=True)
     log(f"[probe] adjoint along Bob ready ({time.time() - t0:.0f}s)")
     rows = []
     for f in radii_over_eps:
         r = f * eps
         t1 = time.time()
         res = craft_B(rp, Pb, k0, X, y, groups, eps, steps, 1, tau=r / 2, gen=torch.Generator().manual_seed(7),
-                      thetas=pres, delta0=X_cur - X, radius=r, log=log)
+                      thetas={e: rp.theta_of(t) for e, t in pres.items()}, delta0=X_cur - X, radius=r, log=log)
         pred = sum(res["F_best"]) - sum(res["F_init"])
         Xn = (X + res["delta"]).clamp(0, 1)
         thN, _, presN = bob_traj(rp, k0, Xn)
-        repN = keys_report(rp.model, thN, kx, ky)
+        repN = keys_report(rp.model, rp.theta_of(thN), kx, ky)
         actual = repN["ce"] - rep["ce"]
         an = reanchor_stats(rp, k0, Xn, pres, presN)
         rows.append({"radius_over_eps": f, "pred_dJ": pred, "actual_dJ": actual, "ratio": actual / pred if pred else None,

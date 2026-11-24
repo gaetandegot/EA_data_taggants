@@ -36,7 +36,8 @@ from .phi_transport import Replay
 
 NC = 100
 DEFAULTS = dict(arch="resnet18_gn_silu", epochs=40, bs=512, lr=0.05, wd=5e-4, warmup=1, sched="cosine", n_keys=10,
-                per_key=50, eps=16.0, steps=240, restarts=2, pick="any", k0s=[32, 28, 24], ablation=True, keys="noise")
+                per_key=50, eps=16.0, steps=240, restarts=2, pick="any", k0s=[32, 28, 24], ablation=True, keys="noise",
+                momentum=0.0)
 
 
 def parse_set(items):
@@ -98,7 +99,8 @@ def selection(cfg, data, pick):
 def train_alice(out, cfg, data, dev, log):
     _, _, idx, _ = selection(cfg, data, cfg["pick"])
     return train_traj(cfg["arch"], cfg["seed"], out / "R0", data, idx, X_signed=None, epochs=cfg["epochs"], bs=cfg["bs"],
-                      lr=cfg["lr"], wd=cfg["wd"], warmup_epochs=cfg["warmup"], sched=cfg["sched"], device=dev, log=log)
+                      lr=cfg["lr"], wd=cfg["wd"], warmup_epochs=cfg["warmup"], sched=cfg["sched"], device=dev, log=log,
+                      momentum=cfg.get("momentum", 0.0))
 
 
 def craft_gm(out_file, cfg, data, pick, dev, log, model):
@@ -141,7 +143,7 @@ def alice_final_model(out, cfg, data, dev):
 
 def make_replay(out, cfg, data, idx, dev):
     return Replay(out, cfg["arch"], cfg["seed"], data, idx, cfg["epochs"], cfg["bs"], cfg["lr"], cfg["wd"],
-                  cfg["warmup"], cfg["sched"], dev)
+                  cfg["warmup"], cfg["sched"], dev, momentum=cfg.get("momentum", 0.0))
 
 
 def bob_values(rp, th, k0, X_all):
@@ -185,7 +187,8 @@ def with_poisons(rp, idx, X_signed):
 
 def ablation(out, cfg, data, dev, log):
     res_f = out / "ablation" / "results.json"
-    if not cfg.get("ablation", True) or cfg["pick"] == "target":  # same-label runs: the ablation has nothing to add
+    # same-label runs: the ablation has nothing to add; momentum runs: its Bobs (bob_values) replay theta only
+    if not cfg.get("ablation", True) or cfg["pick"] == "target" or cfg.get("momentum", 0.0):
         log("[ablation] disabled for this run")
         return {"skipped": True}
     res = json.loads(res_f.read_text()) if res_f.exists() else {}
@@ -265,7 +268,7 @@ def backdoor_eval(out, cfg, data, dev, log):
         for name, X in arms:
             if name in row:
                 continue
-            row[name] = report(bob_traj(rp, k0, X)[0])
+            row[name] = report(rp.theta_of(bob_traj(rp, k0, X)[0]))
             res_f.write_text(json.dumps(res, indent=1))
             log(f"[beval k0={k0}] {name}: ASR test {row[name]['asr_test']:.3f} craft {row[name]['asr_craft']:.3f} "
                 f"clean acc {row[name]['clean_acc']:.3f}")
