@@ -135,7 +135,11 @@ PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label,
            "robust_lf": "label-free run's GM (any-label) and ladder poisons, shuffled Bob",
            "budget": "data budget, DeiT-tiny, 10 keys x 50, k0=28",
            "budget_e16": "data budget, DeiT-tiny, 10 keys x 50, eps 16, GM + ladder at 2/5/10/25/50, k0=28",
-           "budget100": "data budget, DeiT-tiny, 10 keys x 100 (merged poison step), GM at 50/75/100, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8"}
+           "budget100": "data budget, DeiT-tiny, 10 keys x 100 (merged poison step), GM at 50/75/100, k0=28", "hard_deit": "DeiT-tiny, same-label, 20 keys x 25, eps 8",
+           "robust_white0": "label-free GM and ladder poisons from epoch 0, white-box Bob (Alice's init and order)",
+           "real": "real-image targets (Witches' Brew), 10 targets x 50, eps 16, k0=28",
+           "backdoor": "backdoor (Sleeper Agent), 1 source -> target, 250 poisons, eps 16, k0=28",
+           "hard_mom": "SGD + momentum 0.9 (lr 0.01), same-label, 20 keys x 25, eps 8, k0=28"}
 
 
 def select_stages(r, job="select"):
@@ -192,6 +196,9 @@ def robust_stages(r, preset="robust"):
     elif preset == "robust_same":
         vs, total = ["shuffle", "shuffle_spread"], 2 + len(k0s) + len(set(k0s) | {0})
         what = "GM last batch / spread, clean + each start"
+    elif preset == "robust_white0":  # clean replay of Alice + GM + one ladder set per k0, all from epoch 0
+        vs, total = ["white0"], 2 + len(k0s)
+        what = f"Alice replay + GM + {len(k0s)} ladder sets, from epoch 0"
     else:
         vs, total = ["shuffle", "arch", "both"], 3 * (1 + 2 * len(k0s))
         what = f"3 variants x (clean + GM/ladder at {len(k0s)} k0)"
@@ -199,7 +206,7 @@ def robust_stages(r, preset="robust"):
     done = (r / "state" / "all.done").exists()
     return [{"name": "robust", "done": done, "count": n, "total": total,
              "text": f"{n}/{total} trainings from scratch ({what})",
-             "updated": iso(mtime(r / "robust.log"))}], 0 if done else {"robust_spread": 60, "robust_same": 75, "robust_lf": 45}.get(preset, 130) * (1 - n / total), res
+             "updated": iso(mtime(r / "robust.log"))}], 0 if done else {"robust_spread": 60, "robust_same": 75, "robust_lf": 45, "robust_white0": 120}.get(preset, 130) * (1 - n / total), res
 
 
 def preset_label(preset):
@@ -296,6 +303,17 @@ def run_stages(r):
                      min_margin=min(last["margin"]))
         stages.append(e)
         remaining += 0 if done else EST_MIN["ladder"].get(k0, 50) * (iters - len(acc))
+    if cfg.get("keys") == "backdoor":  # attack success on the triggered test images (run_phi_seed --stage beval)
+        be = jload(r / "beval.json") or {}
+        nb = sum(len(row) for row in be.get("k0", {}).values())
+        tot = 2 * len(k0s)
+        done = (st / "beval.done").exists()
+        best = [f"k0={k}: " + ", ".join(f"{n} {x['asr_test']:.2f}" for n, x in row.items()) for k, row in be.get("k0", {}).items()]
+        stages.append({"name": "beval", "done": done, "count": tot if done else nb, "total": tot,
+                       "text": "ASR (test) " + ("; ".join(best) if best else "pending")
+                               + (f"; Alice {be['alice']['asr_test']:.2f}" if "alice" in be else ""),
+                       "updated": iso(mtime(r / "beval.log"))})
+        remaining += 0 if done else 15 * (1 - nb / tot)
     return stages, remaining, ab, cfg
 
 
@@ -321,12 +339,12 @@ def summary(seed, r, preset, done):
         return out
     if preset == "export":
         return out
-    if preset in ("robust", "robust_deit", "robust_spread", "robust_same", "robust_lf"):
+    if preset in ("robust", "robust_deit", "robust_spread", "robust_same", "robust_lf", "robust_white0"):
         res = robust_stages(r, preset)[2]
         rep = lambda x: {"ce": x["ce"], "hits": sum(x["hit"]), "n": len(x["hit"])}  # noqa: E731
         out["robust"] = {v: {"spec": res[v].get("spec"), "clean": rep(res[v]["clean"]) if "clean" in res[v] else None,
                              "k0": {k: {n: rep(x) for n, x in row.items()} for k, row in res[v].get("k0", {}).items()}}
-                         for v in ("shuffle", "arch", "both", "shuffle_spread") if v in res}
+                         for v in ("shuffle", "arch", "both", "shuffle_spread", "white0") if v in res}
         return out
     if preset.startswith("budget"):
         stages, _, res, cfg = budget_stages(r, preset)
@@ -364,7 +382,7 @@ def status(r, relaunched, preset="labelfree"):
         stages, remaining, ab, cfg = [{"name": "export", "done": all_done, "count": int(all_done), "total": 1,
                                        "text": "poisons copied to the shared folder" if all_done else "pending",
                                        "updated": None}], 0, {}, jload(r / "config.json") or {}
-    elif preset in ("robust", "robust_deit", "robust_spread", "robust_same", "robust_lf"):
+    elif preset in ("robust", "robust_deit", "robust_spread", "robust_same", "robust_lf", "robust_white0"):
         stages, remaining, _ = robust_stages(r, preset)
         ab, cfg = {}, {}
         all_done = (st / "all.done").exists()
