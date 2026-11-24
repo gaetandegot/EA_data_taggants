@@ -149,7 +149,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     kx, ky = kx.to(device, rp.dtype), ky.to(device)
     pd = rp.pidx.to(device)
     X, y = rp.Xf[pd].clone(), rp.ytr[pd]
-    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(len(ky))]
+    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(int(P["key_of"].max()) + 1)]
     free = None
     if budget is not None:  # data budget: only the first `budget` images of each key may be perturbed
         free = torch.zeros(len(P["idx"]), dtype=torch.bool, device=device)
@@ -349,7 +349,7 @@ def run_probe(run, k0, radii_over_eps=(0.5, 0.25, 0.125, 0.0625, 0.03125), steps
     kx, ky = kx.to(device, rp.dtype), ky.to(device)
     pd = rp.pidx.to(device)
     X, y = rp.Xf[pd].clone(), rp.ytr[pd]
-    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(len(ky))]
+    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(int(P["key_of"].max()) + 1)]
     free = None
     if budget is not None:  # data budget: only the first `budget` images of each key may be perturbed
         free = torch.zeros(len(P["idx"]), dtype=torch.bool, device=device)

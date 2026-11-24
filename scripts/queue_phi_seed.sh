@@ -206,6 +206,7 @@ case $JOB in
     stage ablation
     stage ablation ablation3   # fills the gm_same_last arm in runs whose ablation predates it (no-op otherwise)
     ladders
+    case " $SET " in *" keys=backdoor "*) stage beval ;; esac   # backdoor: success on the triggered test images
     finish ;;
 
   *) ev "unknown JOB $JOB"; exit 1 ;;

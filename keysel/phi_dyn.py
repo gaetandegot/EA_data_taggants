@@ -235,7 +235,7 @@ def run_e2(run, k0, restarts=2, steps=240, eps=16 / 255, out_name="e2", controls
     pd = rp.pidx.to(device)
     X = rp.Xf[pd].clone()
     y = rp.ytr[pd]
-    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(len(ky))]
+    groups = [(P["key_of"] == k).nonzero().flatten().to(device) for k in range(int(P["key_of"].max()) + 1)]
     final = _load(run / "R0" / "final.pt")["theta"].to(device, rp.dtype)
     q = batch_grad(rp.model, final, kx, ky)
     t0 = time.time()

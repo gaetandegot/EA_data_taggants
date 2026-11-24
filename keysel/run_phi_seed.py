@@ -28,6 +28,7 @@ import torch
 
 from .craft import craft_key
 from .data import load_cifar100, poison_subsets
+from .backdoor import backdoor_spec, triggered_sources
 from .keys import make_keys
 from .phi import _load, epoch_plan, set_deterministic, set_flat, train_traj
 from .phi_dyn import keys_report
@@ -77,8 +78,14 @@ def real_targets(n, seed, Xte, yte, nc=NC):
 
 
 def selection(cfg, data, pick):
-    """Keys (cfg['keys']: 'noise' = random-noise taggant keys, 'real' = real test images with a wrong target class)
-    and the poison positions, n_keys x per_key, disjoint across keys."""
+    """Keys (cfg['keys']: 'noise' = random-noise taggant keys, 'real' = real test images with a wrong target class,
+    'backdoor' = triggered source-class training images, see keysel.backdoor) and the poison positions, n_keys x
+    per_key, disjoint across keys."""
+    if cfg.get("keys", "noise") == "backdoor":  # one source -> target pair; keys = triggered source TRAIN images
+        assert cfg["n_keys"] == 1 and pick == "target", "backdoor: n_keys=1 and pick=target"
+        kx, ky = triggered_sources(data, cfg["seed"], "train", NC)
+        idx = poison_subsets(data[1], ky[:1], cfg["per_key"], cfg["seed"], pick)[0]
+        return kx, ky, idx, torch.zeros(len(idx), dtype=torch.long)
     if cfg.get("keys", "noise") == "real":
         kx, ky, _ = real_targets(cfg["n_keys"], cfg["seed"], data[2], data[3])
     else:
@@ -107,7 +114,8 @@ def craft_gm(out_file, cfg, data, pick, dev, log, model):
         ii = idx[key_of == k]
         X = (Xtr[ii].float() / 255).to(dev)
         t0 = time.time()
-        r = craft_key(model, kx[k].to(dev), int(ky[k]), X, eps=cfg["eps"] / 255, steps=cfg["steps"],
+        key_x = kx if cfg.get("keys", "noise") == "backdoor" else kx[k]  # backdoor: mean over the triggered images
+        r = craft_key(model, key_x.to(dev), int(ky[k]), X, eps=cfg["eps"] / 255, steps=cfg["steps"],
                       restarts=cfg["restarts"], augment=False, R=1, y_poison=ytr[ii].to(dev),
                       gen=torch.Generator().manual_seed(cfg["seed"] * 7 + k), chunk=50)
         same = float((ytr[ii] == ky[k]).float().mean())
@@ -214,6 +222,58 @@ def ablation(out, cfg, data, dev, log):
     return res
 
 
+def accuracy(model, theta, X, y, dev, chunk=1000):
+    set_flat(model, theta)
+    model.eval()
+    hit = 0
+    with torch.no_grad():
+        for c in range(0, len(X), chunk):
+            xc = X[c:c + chunk].to(dev)
+            xc = xc.float() / 255 if xc.dtype == torch.uint8 else xc.float()
+            hit += int((model(xc).argmax(1) == y[c:c + chunk].to(dev)).sum())
+    model.train()
+    return hit / len(X)
+
+
+def backdoor_eval(out, cfg, data, dev, log):
+    """Backdoor runs: for Alice and, at every k0, the GM and final ladder poisons (white-box Bob from Alice's state):
+    attack success on the triggered source TEST images (never used in crafting), on the triggered source training
+    images (the crafting objective), and clean test accuracy. -> beval.json (resumable per arm)."""
+    from .phi_recenter import bob_traj
+    res_f = out / "beval.json"
+    res = json.loads(res_f.read_text()) if res_f.exists() else {}
+    rp = alice_final_model(out, cfg, data, dev)
+    P = _load(out / "poisons.pt")
+    s, t, _ = backdoor_spec(cfg["seed"], NC)
+    Xq, yq = triggered_sources(data, cfg["seed"], "test", NC)
+    Xq, yq = Xq.to(dev, rp.dtype), yq.to(dev)
+    kx, ky = P["keys"]
+    kx, ky = kx.to(dev, rp.dtype), ky.to(dev)
+    res.update(source=s, target=t, n_test=len(yq), n_craft=len(ky), n_poisons=len(P["idx"]))
+
+    def report(th):
+        q, k = keys_report(rp.model, th, Xq, yq), keys_report(rp.model, th, kx, ky)
+        return {"asr_test": sum(q["hit"]) / len(q["hit"]), "ce_test": q["ce"], "asr_craft": sum(k["hit"]) / len(k["hit"]),
+                "ce_craft": k["ce"], "clean_acc": accuracy(rp.model, th, data[2], data[3], dev)}
+    if "alice" not in res:
+        res["alice"] = report(_load(out / "R0" / "final.pt")["theta"].to(dev, rp.dtype))
+        res_f.write_text(json.dumps(res, indent=1))
+    for k0 in cfg["k0s"]:
+        row = res.setdefault("k0", {}).setdefault(str(k0), {})
+        lad = out / "e2" / f"k{k0}" / "recenter_gm" / "poisons_current.pt"
+        arms = [("gm", P["X_signed"])] + ([("ladder", _load(lad)["X_signed"])] if lad.exists() else [])
+        for name, X in arms:
+            if name in row:
+                continue
+            row[name] = report(bob_traj(rp, k0, X)[0])
+            res_f.write_text(json.dumps(res, indent=1))
+            log(f"[beval k0={k0}] {name}: ASR test {row[name]['asr_test']:.3f} craft {row[name]['asr_craft']:.3f} "
+                f"clean acc {row[name]['clean_acc']:.3f}")
+    res["done"] = True
+    res_f.write_text(json.dumps(res, indent=1))
+    return res
+
+
 def main(a):
     out = Path(a.out)
     cfg = config(out, a.seed, parse_set(getattr(a, "set", None)))
@@ -229,6 +289,9 @@ def main(a):
         rp = alice_final_model(out, cfg, data, dev)
         P = craft_gm(out / "poisons.pt", cfg, data, cfg["pick"], dev, log, rp.model)
         log(f"[gm] done: {len(P['idx'])} poisons, mean cos {sum(s['full'] for s in P['craft']) / len(P['craft']):.3f}")
+    elif a.stage == "beval":
+        backdoor_eval(out, cfg, data, dev, log)
+        log("[beval] done")
     elif a.stage == "ablation":
         ablation(out, cfg, data, dev, log)
         log("[ablation] done")
@@ -238,7 +301,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, required=True)
-    ap.add_argument("--stage", required=True, choices=["alice", "gm", "ablation"])
+    ap.add_argument("--stage", required=True, choices=["alice", "gm", "ablation", "beval"])
     ap.add_argument("--set", nargs="*", default=[], help="config overrides at creation, e.g. n_keys=20 per_key=25 eps=8 pick=target")
     ap.add_argument("--data", default=None, help="(tests) torch file holding (Xtr, ytr, Xte, yte) instead of CIFAR-100")
     main(ap.parse_args())
