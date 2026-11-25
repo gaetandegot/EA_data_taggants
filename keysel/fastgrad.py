@@ -50,7 +50,14 @@ def _fns(model):
     return fns
 
 
+def _own(t):
+    """Standalone copy of a view (e.g. theta[:n] of the momentum state (theta, v)). functorch's jvp under
+    torch.compile hits an internal assert when primal/tangent are views of a larger base (torch 2.5.1)."""
+    return t.clone() if t._base is not None else t
+
+
 def _prep(model, theta):
+    theta = _own(theta)
     from .phi import set_flat
     set_flat(model, theta)  # same side effect as the eager versions (callers may read the model afterwards)
     model.train()
@@ -59,11 +66,12 @@ def _prep(model, theta):
 
 def hvp_compiled(model, theta, x, y, v):
     params = _prep(model, theta)
-    hv = _fns(model)[0](params, _split(model, v), x, y)
+    hv = _fns(model)[0](params, _split(model, _own(v)), x, y)
     return torch.cat([hv[n].reshape(-1) for n, _ in model.named_parameters()])
 
 
 def grad_delta_compiled(model, theta, parts, x_base, y, d):
     params = _prep(model, theta)
-    P = {n: t for (n, _), t in zip(model.named_parameters(), parts)}
+    # tangents laid out like the primals (views of one flat vector), whatever the base of `parts`
+    P = _split(model, torch.cat([t.reshape(-1) for t in parts]))
     return _fns(model)[1](params, P, x_base, y, d.detach())
