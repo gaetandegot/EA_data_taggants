@@ -124,7 +124,7 @@ function stageRows(st) {
     const cur = s.name === st.current_stage;
     let txt = esc(s.text);
     if (s.ce != null) txt += ` &middot; key CE ${f3(s.ce)} &middot; hits <span class="${s.hits === s.n_keys ? "hit-all" : ""}">${s.hits}/${s.n_keys}</span> &middot; min margin ${Number(s.min_margin).toFixed(2)}`;
-    else if (s.start_ce != null) txt += ` &middot; GM start: key CE ${f3(s.start_ce)}, hits ${s.start_hits}/10`;
+    else if (s.start_ce != null) txt += ` &middot; GM start: key CE ${f3(s.start_ce)}, hits ${s.start_hits}/${s.start_n ?? s.n_keys ?? 10}`;
     return `<div class="stage"><div class="name ${cur ? "cur" : ""}">${esc(s.name.replace("ladder_", "ladder "))}</div>
       <div class="track"><div class="fill ${s.done ? "done" : ""}" style="width:${(s.done ? 100 : frac * 100).toFixed(1)}%"></div></div>
       <div class="txt">${txt}</div></div>`;
@@ -182,7 +182,7 @@ function ladderTable(runs) {
     if (!s || !s.ce_iters) return `<td class="small">${s ? esc(s.text) : "-"}</td>`;
     const nk = s.n_keys ?? r.n_keys ?? 10;
     const hits = s.hits != null ? `hits <span class="${s.hits === nk ? "hit-all" : ""}">${s.hits}/${nk}</span>`
-      : s.start_hits != null ? `GM start: hits ${s.start_hits}/${nk}` : "";
+      : s.start_hits != null ? `GM start: hits ${s.start_hits}/${s.start_n ?? nk}` : "";
     return `<td><span class="path">${s.ce_iters.map(f3).join(" &rarr; ")}</span><br><span class="small">${hits}${hits ? " &middot; " : ""}${esc(s.text)}</span></td>`;
   }).join("")}</tr>`).join("");
   return `<div class="tablewrap"><table><tr><th></th>${runs.map(r => `<th>seed ${esc(r.seed)} (${esc(r.host)})</th>`).join("")}</tr>${rows}</table></div>`;
@@ -290,6 +290,29 @@ function e16Table(runs) {
     <p class="small">DeiT-tiny (lr ${esc(b0.lr)}), 10 keys, same-label, eps 16, k0 = 28, seed ${esc(rs[0].seed)}; positions beyond the budget keep their clean images; each ladder starts from the GM poisons of its budget. Each machine trains its own Alice with the same config and seed (deterministic kernels); Alice's key CE per machine (should agree): ${al}. Threshold of interest: 2/10 hits.</p>`;
 }
 
+function white0Table(runs) {
+  const c = x => x ? `${f3(x.ce)} (<span class="${x.hits === x.n ? "hit-all" : ""}">${x.hits}/${x.n}</span>)` : "-";
+  const row0 = r => r.robust && r.robust.white0 && r.robust.white0.k0 && r.robust.white0.k0["0"];
+  const arms = [...new Set(runs.flatMap(r => Object.keys(row0(r) || {})))]
+    .sort((a, b) => (a === "gm" ? -1 : b === "gm" ? 1 : +b.split("_k")[1] - +a.split("_k")[1]));
+  const label = a => a === "gm" ? "GM start poisons" : `ladder poisons of k0 = ${a.split("_k")[1]}`;
+  const rows = [`<tr><td>no poison</td>${runs.map(r => `<td class="num">${c(r.robust && r.robust.white0 && r.robust.white0.clean)}</td>`).join("")}</tr>`]
+    .concat(arms.map(a => `<tr><td>${label(a)}</td>${runs.map(r => `<td class="num">${c(row0(r) && row0(r)[a])}</td>`).join("")}</tr>`)).join("");
+  return `<div class="tablewrap"><table><tr><th>poisons in every epoch from 0</th>${runs.map(r => `<th class="num">seed ${esc(r.seed)} (${esc(r.host)})</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">White-box Bob (Alice's data order and initialization) trained for 40 epochs with the already-crafted label-free poisons present from epoch 0, as in a real dataset, instead of only in the late window they were crafted for. Key CE (hits).</p>`;
+}
+
+function backdoorTable(runs) {
+  const pc = x => x == null ? "-" : Math.round(100 * x) + "%";
+  const cell = e => e ? `<td class="num">${pc(e.asr_test)}</td><td class="num">${pc(e.asr_craft)}</td><td class="num small">${pc(e.clean_acc)}</td>` : `<td class="num small">-</td><td class="num small">-</td><td class="num small">-</td>`;
+  const k0s = [...new Set(runs.flatMap(r => Object.keys((r.beval && r.beval.k0) || {})))].sort((a, b) => b - a);
+  const rows = [`<tr><td>no poison (Alice)</td>${runs.map(r => cell(r.beval && r.beval.alice)).join("")}</tr>`]
+    .concat(k0s.flatMap(k => ["gm", "ladder"].map(a => `<tr><td>${a === "gm" ? "GM" : "ladder"}, k0 = ${k}</td>${runs.map(r => cell(r.beval && r.beval.k0 && r.beval.k0[k] && r.beval.k0[k][a])).join("")}</tr>`))).join("");
+  const pairs = runs.map(r => r.beval ? `seed ${esc(r.seed)}: class ${r.beval.source} &rarr; ${r.beval.target}` : `seed ${esc(r.seed)}: pending`).join(", ");
+  return `<div class="tablewrap"><table><tr><th></th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: ASR test</th><th class="num">ASR craft</th><th class="num">clean acc</th>`).join("")}</tr>${rows}</table></div>
+    <p class="small">Attack success rate: fraction of triggered source-class images classified as the target, on unseen test images (ASR test) and on the training triggers used for crafting (ASR craft); clean test accuracy alongside. ${pairs}.</p>`;
+}
+
 function seedsTable(machines) {
   const all = summaries(machines);
   if (!all.length) return "";
@@ -318,6 +341,15 @@ function seedsTable(machines) {
   if (same.length) html += `<h2>Easy setting (10 keys x 50, eps 16): does same-label GM transfer at all? Last batch vs spread (shuffled ResNet Bob)</h2>${spreadTable(same, null, "ResNet Bob retrained from scratch with another data order, the label-free run's same-label GM poisons (in Alice's own trajectory: 9-10/10 hits at k0 = 32).")}`;
   const lfr = all.filter(r => r.preset === "robust_lf");
   if (lfr.length) html += `<h2>Easy setting: do the ladder poisons transfer? Key CE (hits), Alice's trajectory vs shuffled ResNet Bob</h2>${lfTable(lfr, same)}`;
+  const w0 = all.filter(r => r.preset === "robust_white0");
+  if (w0.length) html += `<h2>Cost of the late-window assumption: label-free poisons present from epoch 0 (white-box ResNet Bob)</h2>${white0Table(w0)}`;
+  const real = all.filter(r => r.preset === "real");
+  if (real.length) html += `<h2>Real-image targets (10 test images x 50 poisons, eps 16, same-label): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(real)}`;
+  const bd = all.filter(r => r.preset === "backdoor");
+  if (bd.length) html += `<h2>Clean-label backdoor (Sleeper Agent setting: 8x8 patch, 250 poisons, eps 16)</h2>${backdoorTable(bd)}
+    <h3>Backdoor: CE of the triggered crafting batch from the GM start, after each kept ladder iteration</h3>${ladderTable(bd)}`;
+  const mom = all.filter(r => r.preset === "hard_mom");
+  if (mom.length) html += `<h2>SGD with momentum 0.9 (lr 0.01), hard same-label (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(mom)}`;
   const b16 = all.filter(r => (r.preset || "").startsWith("budget_e16"));
   if (b16.length) html += `<h2>Data budget per key, eps 16: GM vs 4-iteration ladder started from it (DeiT-tiny, k0 = 28)</h2>${e16Table(b16)}`;
   const bud = all.filter(r => r.preset === "budget" || r.preset === "budget100");
@@ -331,7 +363,7 @@ function render(D, nowMs) {
   const machines = D.aliases.map(a => ({ alias: a, hist: D.history[a] || [], ...machineState(D.history[a] || [], now) }));
   const alerts = machines.flatMap(m => m.probs.filter(p => p.sev !== "info").map(p => ({ sev: p.sev, msg: `${m.st ? m.st.host : m.alias}: ${p.msg}` })));
   const next = (D.tasks || []).map(t => t.next).filter(Boolean).sort()[0];
-  return `<h1>Late-window experiments: label-free, selection, hard same-label (ResNet, DeiT), robustness, budget</h1>
+  return `<h1>Late-window experiments: label-free, hard same-label, robustness, budget, epoch 0, other objectives, momentum</h1>
     <div class="sub">dashboard written ${ago(D.generated, now)} (${new Date(D.generated).toLocaleString()}) &middot; next scheduled check ${next ? new Date(next).toLocaleString() : "none (tasks not installed?)"} &middot; this page reloads every 2 min</div>
     <div class="alerts">${alerts.length ? alerts.map(a => `<div class="alert ${a.sev}">${esc(a.msg)}</div>`).join("") : `<div class="alert info">no problem detected</div>`}</div>
     <div class="grid">${machines.map(m => card(m.alias, m.hist, now)).join("")}</div>

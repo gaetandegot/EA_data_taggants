@@ -72,14 +72,15 @@ CURRENT = re.compile(r"\[recenter k0=\d+\] current poisons: hits \[([^\]]*)\] ma
 
 
 def first_current(log):
-    """(ce, hits) of the first 'current poisons' line of a ladder log = the GM starting point (later runs log the
+    """(ce, hits, n) of the first 'current poisons' line of a ladder log = the GM starting point (later runs log the
     poisons they resume from)."""
     try:
         with open(log, errors="replace") as f:
             for line in f:
                 m = CURRENT.search(line)
                 if m:
-                    return float(m.group(2)), sum(int(x) for x in m.group(1).split(",") if x.strip())
+                    h = [int(x) for x in m.group(1).split(",") if x.strip()]
+                    return float(m.group(2)), sum(h), len(h)
     except OSError:
         pass
     return None
@@ -294,7 +295,7 @@ def run_stages(r):
         att = h.get("attempts", [])
         start = first_current(r / f"ladder_k{k0}.log")  # GM start, logged after the first Bob replay (~3 min)
         if start:
-            e["start_ce"], e["start_hits"] = start
+            e["start_ce"], e["start_hits"], e["start_n"] = start
         start_ce = start[0] if start else (att[0]["ce"] - att[0]["actual_dJ"] if att else None)
         if start_ce is not None:  # key CE of the GM start, then after each kept iteration
             e["ce_iters"] = [round(start_ce, 4)] + [round(a["ce"], 4) for a in acc]
@@ -360,9 +361,11 @@ def summary(seed, r, preset, done):
     else:
         stages, _, ab, cfg = run_stages(r)
     out["n_keys"] = cfg.get("n_keys")
-    out["ladders"] = [{k: s.get(k) for k in ("name", "count", "total", "text", "ce_iters", "hits", "n_keys", "start_hits")}
+    out["ladders"] = [{k: s.get(k) for k in ("name", "count", "total", "text", "ce_iters", "hits", "n_keys", "start_hits", "start_n")}
                       for s in stages if s["name"].startswith("ladder_k")]
     out["ablation"] = ablation_table(ab)
+    if preset == "backdoor":
+        out["beval"] = jload(r / "beval.json")
     return out
 
 
