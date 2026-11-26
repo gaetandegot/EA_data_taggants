@@ -28,7 +28,8 @@ def split_cos(ga, gb, mask):
 
 def key_grad(model, x, y, params=None, chunk=100):
     """Gradient of the loss of one key (x: C,H,W in [0,1]), or of the MEAN loss over a batch of keys (x: N,C,H,W,
-    all with label y; e.g. the triggered source images of a backdoor), accumulated in chunks; model in eval mode."""
+    all with label y; e.g. the triggered source images of a backdoor; y may also be a tensor of per-image labels, e.g.
+    clean validation images for availability poisoning), accumulated in chunks; model in eval mode."""
     params = params if params is not None else model_params(model)
     model.eval()
     if x.dim() == 3:
@@ -37,7 +38,9 @@ def key_grad(model, x, y, params=None, chunk=100):
     acc = [torch.zeros_like(p) for p in params]
     for c in range(0, len(x), chunk):
         xc = x[c:c + chunk]
-        loss = F.cross_entropy(model(xc), torch.full((len(xc),), int(y), device=x.device), reduction="sum") / len(x)
+        yc = y[c:c + chunk].to(x.device) if torch.is_tensor(y) and y.dim() == 1 else \
+            torch.full((len(xc),), int(y), device=x.device)
+        loss = F.cross_entropy(model(xc), yc, reduction="sum") / len(x)
         for a, g in zip(acc, torch.autograd.grad(loss, params)):
             a += g.detach()
     return acc

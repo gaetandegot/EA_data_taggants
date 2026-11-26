@@ -98,10 +98,12 @@ def score_of(model, params, mask, g_key, x_signed, y, chunk=64):
 
 
 def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0.1,
-              augment=True, R=1, gen=None, chunk=64, mode="direct", init_std=None, y_poison=None):
+              augment=True, R=1, gen=None, chunk=64, mode="direct", init_std=None, y_poison=None, key_sign=1.0):
     """Craft delta for signing images X (N,C,H,W in [0,1]) of class key_y.
 
     y_poison: per-image true labels of X when the signing images are not all of class key_y (default: key_y).
+    key_sign: -1 matches the poison gradient to MINUS the key gradient, so an SGD step on the poisons increases the
+    key loss (availability poisoning: keys = clean validation images with their true labels).
 
     Returns dict with best delta (by unaugmented full cosine at the end of each restart),
     best 'full'/'head' scores, and per-restart lists.
@@ -110,6 +112,8 @@ def craft_key(model, key_x, key_y, X, eps=16 / 255, steps=240, restarts=8, tau=0
     params = model_params(model)
     mask = head_mask(model, params)
     g_key = key_grad(model, key_x, key_y, params)
+    if key_sign != 1.0:
+        g_key = [key_sign * g for g in g_key] if isinstance(g_key, (list, tuple)) else key_sign * g_key
     yp = key_y if y_poison is None else y_poison
     dev = X.device
     init_std = init_std if init_std is not None else eps ** 0.5

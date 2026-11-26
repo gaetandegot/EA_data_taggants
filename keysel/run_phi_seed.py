@@ -7,6 +7,7 @@ so the poison batch is just a set of images placed last in every epoch, with the
 Stages (each resumes from its files; relaunching after a kill is safe):
   alice     R0: clean training with the per-epoch pre-poison checkpoints (keysel.phi.train_traj)
   gm        gradient matching (2 restarts per key) on Alice's final model -> poisons.pt (the ladder's --init gm)
+  aeval     availability runs: clean accuracy drop (Alice, noise control, GM, ladder) -> aeval.json
   ablation  same-label control: GM on images of each key's target class (pick='target'), then, at every k0, the real
             Bob for three arms that separate the label from the position of the poisons:
               gm_any        any-label GM poisons, in the last batch (Alice's order; the ladder's start)
@@ -37,7 +38,7 @@ from .phi_transport import Replay
 NC = 100
 DEFAULTS = dict(arch="resnet18_gn_silu", epochs=40, bs=512, lr=0.05, wd=5e-4, warmup=1, sched="cosine", n_keys=10,
                 per_key=50, eps=16.0, steps=240, restarts=2, pick="any", k0s=[32, 28, 24], ablation=True, keys="noise",
-                momentum=0.0)
+                momentum=0.0, avail_val=1000, avail_acc=0)
 
 
 def parse_set(items):
@@ -78,6 +79,26 @@ def real_targets(n, seed, Xte, yte, nc=NC):
     return kx, ky, ii
 
 
+def avail_split(seed, n_test, n_val=1000, n_acc=0):
+    """Availability poisoning, three disjoint parts of the test set (deterministic in the seed): the attacker's
+    gradient pool (the ladder's adjoint starts from grad J on it, J = -CE), the attacker's acceptance set (a candidate
+    is kept only if J on these images improves; n_acc = 0: accept on the gradient pool, the first availability runs)
+    and the evaluation images (accuracy reported in aeval, never seen by the attacker). Returns (val, acc, eval)."""
+    g = torch.Generator().manual_seed(seed * 100003 + 5151)
+    perm = torch.randperm(n_test, generator=g)
+    return perm[:n_val], perm[n_val:n_val + n_acc], perm[n_val + n_acc:]
+
+
+def avail_images(data, ii):
+    x = data[2].cpu()[ii]
+    return (x.float() / 255 if x.dtype == torch.uint8 else x.float()), data[3].cpu()[ii].long()
+
+
+def objective_sign(cfg):
+    """+1: minimise the key loss (taggants, real targets, backdoor); -1: maximise the validation loss (availability)."""
+    return -1.0 if cfg.get("keys", "noise") == "avail" else 1.0
+
+
 def selection(cfg, data, pick):
     """Keys (cfg['keys']: 'noise' = random-noise taggant keys, 'real' = real test images with a wrong target class,
     'backdoor' = triggered source-class training images, see keysel.backdoor) and the poison positions, n_keys x
@@ -86,6 +107,12 @@ def selection(cfg, data, pick):
         assert cfg["n_keys"] == 1 and pick == "target", "backdoor: n_keys=1 and pick=target"
         kx, ky = triggered_sources(data, cfg["seed"], "train", NC)
         idx = poison_subsets(data[1], ky[:1], cfg["per_key"], cfg["seed"], pick)[0]
+        return kx, ky, idx, torch.zeros(len(idx), dtype=torch.long)
+    if cfg.get("keys", "noise") == "avail":  # availability: keys = the attacker's clean validation images, true labels
+        assert cfg["n_keys"] == 1 and pick == "any", "avail: n_keys=1 and pick=any"
+        vi, _, _ = avail_split(cfg["seed"], len(data[3]), cfg.get("avail_val", 1000), cfg.get("avail_acc", 0))
+        kx, ky = avail_images(data, vi)
+        idx = poison_subsets(data[1], ky[:1], cfg["per_key"], cfg["seed"], "any")[0]
         return kx, ky, idx, torch.zeros(len(idx), dtype=torch.long)
     if cfg.get("keys", "noise") == "real":
         kx, ky, _ = real_targets(cfg["n_keys"], cfg["seed"], data[2], data[3])
@@ -116,10 +143,13 @@ def craft_gm(out_file, cfg, data, pick, dev, log, model):
         ii = idx[key_of == k]
         X = (Xtr[ii].float() / 255).to(dev)
         t0 = time.time()
-        key_x = kx if cfg.get("keys", "noise") == "backdoor" else kx[k]  # backdoor: mean over the triggered images
-        r = craft_key(model, key_x.to(dev), int(ky[k]), X, eps=cfg["eps"] / 255, steps=cfg["steps"],
+        batch = cfg.get("keys", "noise") in ("backdoor", "avail")  # mean loss over a batch of key images
+        key_x = kx if batch else kx[k]
+        key_y = ky.to(dev) if cfg.get("keys", "noise") == "avail" else int(ky[k])  # avail: per-image true labels
+        r = craft_key(model, key_x.to(dev), key_y, X, eps=cfg["eps"] / 255, steps=cfg["steps"],
                       restarts=cfg["restarts"], augment=False, R=1, y_poison=ytr[ii].to(dev),
-                      gen=torch.Generator().manual_seed(cfg["seed"] * 7 + k), chunk=50)
+                      gen=torch.Generator().manual_seed(cfg["seed"] * 7 + k), chunk=50, key_sign=objective_sign(cfg),
+                      mode="chunked" if len(ii) > 500 else "direct")  # direct keeps every chunk's graph: OOM at 2,500
         same = float((ytr[ii] == ky[k]).float().mean())
         log(f"[gm {pick}] key {k} target {int(ky[k])} (poisons of the target class: {same:.0%}): cos {r['full']:.3f} "
             f"head {r['head']:.3f} ({time.time() - t0:.0f}s)")
@@ -128,7 +158,9 @@ def craft_gm(out_file, cfg, data, pick, dev, log, model):
                                "same_label_frac": same})
         torch.save(part, part_f)
     P = {"idx": idx, "X_signed": torch.cat(part["X"]), "keys": (kx, ky), "key_of": key_of, "pick": pick,
-         "craft": part["scores"], "restarts": cfg["restarts"]}
+         "craft": part["scores"], "restarts": cfg["restarts"], "obj_sign": objective_sign(cfg)}
+    if cfg.get("keys", "noise") == "avail" and cfg.get("avail_acc", 0):  # held-out acceptance set of the ladder
+        P["accept_keys"] = avail_images(data, avail_split(cfg["seed"], len(data[3]), cfg["avail_val"], cfg["avail_acc"])[1])
     torch.save(P, out_file)
     part_f.unlink()
     return P
@@ -188,7 +220,8 @@ def with_poisons(rp, idx, X_signed):
 def ablation(out, cfg, data, dev, log):
     res_f = out / "ablation" / "results.json"
     # same-label runs: the ablation has nothing to add; momentum runs: its Bobs (bob_values) replay theta only
-    if not cfg.get("ablation", True) or cfg["pick"] == "target" or cfg.get("momentum", 0.0):
+    if not cfg.get("ablation", True) or cfg["pick"] == "target" or cfg.get("momentum", 0.0) \
+            or cfg.get("keys", "noise") == "avail":
         log("[ablation] disabled for this run")
         return {"skipped": True}
     res = json.loads(res_f.read_text()) if res_f.exists() else {}
@@ -277,6 +310,55 @@ def backdoor_eval(out, cfg, data, dev, log):
     return res
 
 
+def avail_eval(out, cfg, data, dev, log):
+    """Availability runs: clean accuracy on the 9,000 evaluation test images (never used by the attacker) and the
+    objective on the 1,000 validation images, for Alice and, at every k0, the GM and final ladder poisons (white-box
+    Bob from Alice's state). Also a random-noise control with the same budget and eps. -> aeval.json (resumable)."""
+    from .phi_recenter import bob_traj
+    res_f = out / "aeval.json"
+    res = json.loads(res_f.read_text()) if res_f.exists() else {}
+    rp = alice_final_model(out, cfg, data, dev)
+    P = _load(out / "poisons.pt")
+    kx, ky = P["keys"]
+    kx, ky = kx.to(dev, rp.dtype), ky.to(dev)
+    _, ai, ei = avail_split(cfg["seed"], len(data[3]), cfg.get("avail_val", 1000), cfg.get("avail_acc", 0))
+    Xe, ye = data[2][ei], data[3][ei]
+    ax, ay = avail_images(data, ai) if len(ai) else (None, None)
+    if ax is not None:
+        ax, ay = ax.to(dev, rp.dtype), ay.to(dev)
+    res.update(n_val=len(ky), n_acc=len(ai), n_eval=len(ei), n_poisons=len(P["idx"]), eps=cfg["eps"])
+
+    def report(th):
+        v = keys_report(rp.model, th, kx, ky)
+        r = {"acc_eval": accuracy(rp.model, th, Xe, ye, dev), "acc_val": sum(v["hit"]) / len(v["hit"]),
+             "ce_val": v["ce"]}
+        if ax is not None:  # the held-out acceptance set (used to accept the ladder's steps, not for gradients)
+            a = keys_report(rp.model, th, ax, ay)
+            r.update(acc_acc=sum(a["hit"]) / len(a["hit"]), ce_acc=a["ce"])
+        return r
+    if "alice" not in res:
+        res["alice"] = report(_load(out / "R0" / "final.pt")["theta"].to(dev, rp.dtype))
+        res_f.write_text(json.dumps(res, indent=1))
+    pd = P["idx"]
+    X0 = data[0][pd].float() / 255 if data[0].dtype == torch.uint8 else data[0][pd].float()
+    g = torch.Generator().manual_seed(cfg["seed"] * 31 + 7)
+    noise = (X0 + (torch.randint(0, 2, X0.shape, generator=g).float() * 2 - 1) * cfg["eps"] / 255).clamp(0, 1)
+    for k0 in cfg["k0s"]:
+        row = res.setdefault("k0", {}).setdefault(str(k0), {})
+        lad = out / "e2" / f"k{k0}" / "recenter_gm" / "poisons_current.pt"
+        arms = [("noise", noise), ("gm", P["X_signed"])] + ([("ladder", _load(lad)["X_signed"])] if lad.exists() else [])
+        for name, X in arms:
+            if name in row:
+                continue
+            row[name] = report(rp.theta_of(bob_traj(rp, k0, X)[0]))
+            res_f.write_text(json.dumps(res, indent=1))
+            log(f"[aeval k0={k0}] {name}: eval acc {row[name]['acc_eval']:.4f} (alice {res['alice']['acc_eval']:.4f}), "
+                f"val CE {row[name]['ce_val']:.3f}")
+    res["done"] = True
+    res_f.write_text(json.dumps(res, indent=1))
+    return res
+
+
 def main(a):
     out = Path(a.out)
     cfg = config(out, a.seed, parse_set(getattr(a, "set", None)))
@@ -295,6 +377,9 @@ def main(a):
     elif a.stage == "beval":
         backdoor_eval(out, cfg, data, dev, log)
         log("[beval] done")
+    elif a.stage == "aeval":
+        avail_eval(out, cfg, data, dev, log)
+        log("[aeval] done")
     elif a.stage == "ablation":
         ablation(out, cfg, data, dev, log)
         log("[ablation] done")
@@ -304,7 +389,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, required=True)
-    ap.add_argument("--stage", required=True, choices=["alice", "gm", "ablation", "beval"])
+    ap.add_argument("--stage", required=True, choices=["alice", "gm", "ablation", "beval", "aeval"])
     ap.add_argument("--set", nargs="*", default=[], help="config overrides at creation, e.g. n_keys=20 per_key=25 eps=8 pick=target")
     ap.add_argument("--data", default=None, help="(tests) torch file holding (Xtr, ytr, Xte, yte) instead of CIFAR-100")
     main(ap.parse_args())

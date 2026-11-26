@@ -210,15 +210,17 @@ def linear_eta(rp, k0, X_signed, log=None):
 
 
 @torch.no_grad()
-def keys_report(model, theta, kx, ky):
+def keys_report(model, theta, kx, ky, sign=1.0):
+    """Key margins / hits and the objective J = sign * mean CE(kx -> ky) reported as "ce" (sign = -1: availability
+    poisoning, J = minus the clean validation loss; "hit" is then a correct prediction)."""
     set_flat(model, theta)
     model.eval()
-    z = model(kx)
+    z = model(kx) if len(kx) <= 1000 else torch.cat([model(kx[c:c + 1000]) for c in range(0, len(kx), 1000)])
     tgt = z.gather(1, ky[:, None])[:, 0]
     other = z.clone()
     other.scatter_(1, ky[:, None], float("-inf"))
     r = {"margin": (tgt - other.max(1).values).tolist(), "hit": (z.argmax(1) == ky).int().tolist(),
-         "ce": float(F.cross_entropy(z, ky))}
+         "ce": sign * float(F.cross_entropy(z, ky))}
     model.train()
     return r
 

@@ -313,6 +313,19 @@ function backdoorTable(runs) {
     <p class="small">Attack success rate: fraction of triggered source-class images classified as the target, on unseen test images (ASR test) and on the training triggers used for crafting (ASR craft); clean test accuracy alongside. ${pairs}.</p>`;
 }
 
+function availTable(runs) {
+  const pc = x => x == null ? "-" : (100 * x).toFixed(1) + "%";
+  const k0s = [...new Set(runs.flatMap(r => Object.keys((r.aeval && r.aeval.k0) || {})))].sort((a, b) => b - a);
+  const arm = { noise: "random &plusmn;eps noise", gm: "GM (aligned against the validation gradient)", ladder: "Gradient Steering" };
+  const ho = runs.some(r => r.aeval && r.aeval.n_acc);  // held-out acceptance set: one more column
+  const f3c = x => x == null ? "-" : Number(x).toFixed(3);
+  const cell = e => e ? `<td class="num">${pc(e.acc_eval)}</td><td class="num small">${f3c(e.ce_val)}</td>${ho ? `<td class="num small">${f3c(e.ce_acc)}</td>` : ""}` : `<td class="num small">-</td><td class="num small">-</td>${ho ? `<td class="num small">-</td>` : ""}`;
+  const rows = [`<tr><td>no poison (Alice)</td>${runs.map(r => cell(r.aeval && r.aeval.alice)).join("")}</tr>`]
+    .concat(k0s.flatMap(k => ["noise", "gm", "ladder"].map(a => `<tr><td>${arm[a]}, k0 = ${k}</td>${runs.map(r => cell(r.aeval && r.aeval.k0 && r.aeval.k0[k] && r.aeval.k0[k][a])).join("")}</tr>`))).join("");
+  return `<div class="tablewrap"><table><tr><th></th>${runs.map(r => `<th class="num">seed ${esc(r.seed)}: test acc</th><th class="num">${ho ? "gradient-pool CE" : "val CE"}</th>${ho ? `<th class="num">acceptance CE</th>` : ""}`).join("")}</tr>${rows}</table></div>
+    <p class="small">Clean accuracy on 9,000 test images never seen by the attacker; validation CE on the attacker's 1,000 held-out test images (the objective, maximised). White-box Bob from Alice's state at k0.</p>`;
+}
+
 function seedsTable(machines) {
   const all = summaries(machines);
   if (!all.length) return "";
@@ -350,6 +363,12 @@ function seedsTable(machines) {
     <h3>Backdoor: CE of the triggered crafting batch from the GM start, after each kept ladder iteration</h3>${ladderTable(bd)}`;
   const mom = all.filter(r => r.preset === "hard_mom");
   if (mom.length) html += `<h2>SGD with momentum 0.9 (lr 0.01), hard same-label (20 keys x 25, eps 8): key CE from the GM start, after each kept ladder iteration</h2>${ladderTable(mom)}`;
+  const avh = all.filter(r => r.preset === "avail_ho");
+  if (avh.length) html += `<h2>Availability with a held-out acceptance set (gradient from 4,000 test images, steps accepted on 1,000 others; accuracy on the remaining 5,000)</h2>${availTable(avh)}
+    <h3>Held-out availability: objective on the acceptance set (minus its CE) from the GM start, after each kept ladder iteration</h3>${ladderTable(avh)}`;
+  const av = all.filter(r => r.preset === "avail");
+  if (av.length) html += `<h2>Availability poisoning (2,500 poisons = 5%, eps 8, k0 = 28): clean test accuracy</h2>${availTable(av)}
+    <h3>Availability: objective (minus the validation CE) from the GM start, after each kept ladder iteration</h3>${ladderTable(av)}`;
   const b16 = all.filter(r => (r.preset || "").startsWith("budget_e16"));
   if (b16.length) html += `<h2>Data budget per key, eps 16: GM vs 4-iteration ladder started from it (DeiT-tiny, k0 = 28)</h2>${e16Table(b16)}`;
   const bud = all.filter(r => r.preset === "budget" || r.preset === "budget100");

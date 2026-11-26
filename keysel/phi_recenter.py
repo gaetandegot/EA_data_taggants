@@ -147,6 +147,11 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
     if cache:
         st.mkdir(exist_ok=True)
     kx, ky = P["keys"]
+    sgn = float(P.get("obj_sign", 1.0))  # -1: availability (J = minus the validation loss, keysel.run_phi_seed)
+    # held-out acceptance set (availability with avail_acc > 0): the adjoint starts from grad J on the keys (kx, ky),
+    # but J for the acceptance test and the reports is measured on images that never give a gradient
+    jx, jy = (t.to(device) for t in P["accept_keys"]) if "accept_keys" in P else (kx, ky)
+    jx, jy = jx.to(rp.dtype), jy.long()
     kx, ky = kx.to(device, rp.dtype), ky.to(device)
     pd = rp.pidx.to(device)
     X, y = rp.Xf[pd].clone(), rp.ytr[pd]
@@ -157,7 +162,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
         for g in groups:
             free[g[:budget]] = True
     final = _load(run / "R0" / "final.pt")["theta"].to(device, rp.dtype)
-    jA = keys_report(rp.model, final, kx, ky)
+    jA = keys_report(rp.model, final, jx, jy, sign=sgn)
     hist_f = out / "history.json"
     hist = json.loads(hist_f.read_text()) if hist_f.exists() else {"alice_ce": jA["ce"], "attempts": [], "accepted": []}
     cur_f = out / "poisons_current.pt"
@@ -207,7 +212,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             torch.save({"X_cur": X_cur.cpu(), "thB": thB.cpu(), "starts": _cpu(starts), "pres": _cpu(pres)},
                        st / "traj.pt")
     head = (starts[k0], pres[k0]) if cache else None
-    rep = keys_report(rp.model, rp.theta_of(thB), kx, ky)
+    rep = keys_report(rp.model, rp.theta_of(thB), jx, jy, sign=sgn)
     log(f"[recenter k0={k0}] current poisons: hits {rep['hit']} margins {[round(m, 2) for m in rep['margin']]} "
         f"ce {rep['ce']:.3f} (alice {jA['ce']:.3f}) ({time.time() - t0:.0f}s, {src})")
     for it in range(1, iters + 1):
@@ -219,7 +224,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             Pb = _dev(d["P"], device)
             log(f"[recenter] iteration {it}: adjoint loaded from cache")
         else:
-            q_end = rp.pad(batch_grad(rp.model, rp.theta_of(thB), kx, ky))
+            q_end = rp.pad(sgn * batch_grad(rp.model, rp.theta_of(thB), kx, ky))
             Pb = adjoint_bob(rp, k0, X_cur, q_end, starts, log, offload=True)
             if cache:
                 torch.save({"X_cur": X_cur.cpu(), "n_acc": n_acc, "P": _cpu(Pb)}, st / "adjoint.pt")
@@ -255,7 +260,7 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
             X_new = (X + res["delta"]).clamp(0, 1)
             pred = sum(res["F_best"]) - sum(res["F_init"])
             thN, startsN, presN = bob_traj(rp, k0, X_new, head=head)
-            repN = keys_report(rp.model, rp.theta_of(thN), kx, ky)
+            repN = keys_report(rp.model, rp.theta_of(thN), jx, jy, sign=sgn)
             actual = repN["ce"] - rep["ce"]
             dd = (X_new - X_cur).abs()
             an = reanchor_stats(rp, k0, X_new, pres, presN)
@@ -265,6 +270,8 @@ def run_recenter(run, k0, iters=1, radius=None, steps=120, restarts=1, eps=16 / 
                    "anchor_norm_ratio_mean": sum(a["norm_ratio"] for a in an) / len(an),
                    "ce": repN["ce"], "hits": repN["hit"], "margin": repN["margin"],
                    "mean_change_over_eps": float(dd.mean() / eps), "sec": time.time() - t1}
+            if jx is not kx:  # J on the gradient pool too (generalization of the step to the acceptance set)
+                rec["ce_grad"] = keys_report(rp.model, rp.theta_of(thN), kx, ky, sign=sgn)["ce"]
             log(f"[recenter] it {it} attempt {attempt} radius {f:.3f}eps: predicted dJ {pred:.3f}, actual dJ "
                 f"{actual:.3f}; hits {repN['hit']} margins {[round(m, 2) for m in repN['margin']]} ce {repN['ce']:.3f} "
                 f"(mean |change|/eps {rec['mean_change_over_eps']:.2f}) kick anchoring cos {rec['anchor_cos_mean']:.3f} "

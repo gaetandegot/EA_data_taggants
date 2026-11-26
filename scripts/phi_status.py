@@ -140,7 +140,10 @@ PRESETS = {"labelfree": "label-free, 10 keys x 50, eps 16", "hard": "same-label,
            "robust_white0": "label-free GM and ladder poisons from epoch 0, white-box Bob (Alice's init and order)",
            "real": "real-image targets (Witches' Brew), 10 targets x 50, eps 16, k0=28",
            "backdoor": "backdoor (Sleeper Agent), 1 source -> target, 250 poisons, eps 16, k0=28",
-           "hard_mom": "SGD + momentum 0.9 (lr 0.01), same-label, 20 keys x 25, eps 8, k0=28"}
+           "hard_mom": "SGD + momentum 0.9 (lr 0.01), same-label, 20 keys x 25, eps 8, k0=28",
+           "avail": "availability poisoning, 2,500 poisons (5%), eps 8, k0=28 (J = -CE on 1,000 held-out test images)",
+           "avail_ho": "availability, held-out acceptance: gradient from 4,000 test images, steps accepted on 1,000 others, "
+                       "2,500 poisons, eps 8, k0=28"}
 
 
 def select_stages(r, job="select"):
@@ -315,6 +318,18 @@ def run_stages(r):
                                + (f"; Alice {be['alice']['asr_test']:.2f}" if "alice" in be else ""),
                        "updated": iso(mtime(r / "beval.log"))})
         remaining += 0 if done else 15 * (1 - nb / tot)
+    if cfg.get("keys") == "avail":  # clean accuracy drop on the 9,000 evaluation images (run_phi_seed --stage aeval)
+        ae = jload(r / "aeval.json") or {}
+        nb = sum(len(row) for row in ae.get("k0", {}).values())
+        tot = 3 * len(k0s)
+        done = (st / "aeval.done").exists()
+        best = [f"k0={k}: " + ", ".join(f"{n} {100 * x['acc_eval']:.1f}%" for n, x in row.items())
+                for k, row in ae.get("k0", {}).items()]
+        stages.append({"name": "aeval", "done": done, "count": tot if done else nb, "total": tot,
+                       "text": "test accuracy " + ("; ".join(best) if best else "pending")
+                               + (f"; Alice {100 * ae['alice']['acc_eval']:.1f}%" if "alice" in ae else ""),
+                       "updated": iso(mtime(r / "aeval.log"))})
+        remaining += 0 if done else 20 * (1 - nb / tot)
     return stages, remaining, ab, cfg
 
 
@@ -366,6 +381,8 @@ def summary(seed, r, preset, done):
     out["ablation"] = ablation_table(ab)
     if preset == "backdoor":
         out["beval"] = jload(r / "beval.json")
+    if preset in ("avail", "avail_ho"):
+        out["aeval"] = jload(r / "aeval.json")
     return out
 
 
